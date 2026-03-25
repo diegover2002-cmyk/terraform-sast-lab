@@ -191,7 +191,7 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_prompt},
         ],
-        "max_output_tokens": 1024,
+        "max_output_tokens": 4096,
     }
     resp = requests.post(ENDPOINT, headers=headers, json=payload, timeout=60)
     print(f"[DEBUG] status={resp.status_code} ct={resp.headers.get('content-type','?')} body={resp.text[:300]}", flush=True)
@@ -200,6 +200,9 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
         result = resp.json()
     except Exception as je:
         raise ValueError(f"Non-JSON response (status={resp.status_code}): {resp.text[:300]}") from je
+    if result.get("status") == "incomplete":
+        details = result.get("incomplete_details") or result.get("error") or "unknown"
+        raise ValueError(f"API response incomplete: {details}")
 
     raw_text = ""
     for item in result.get("output", []):
