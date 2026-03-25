@@ -202,8 +202,12 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
         "max_output_tokens": 1024,
     }
     resp = requests.post(ENDPOINT, headers=headers, json=payload, timeout=60)
+    print(f"API status: {resp.status_code} | content-type: {resp.headers.get('content-type','?')} | body: {resp.text[:300]}")
     resp.raise_for_status()
-    result = resp.json()
+    try:
+        result = resp.json()
+    except Exception as json_err:
+        raise ValueError(f"API returned non-JSON (status={resp.status_code}): {resp.text[:300]}") from json_err
 
     raw_text = ""
     for item in result.get("output", []):
@@ -218,7 +222,7 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
 
     raw_text = re.sub(r"```[a-z]*", "", raw_text).strip()
     if not raw_text:
-        raise ValueError(f"Empty output from API. Full response: {json.dumps(result)[:500]}")
+        raise ValueError(f"Empty output from API. Full response keys: {list(result.keys())} | {json.dumps(result)[:400]}")
     return json.loads(raw_text)
 
 
