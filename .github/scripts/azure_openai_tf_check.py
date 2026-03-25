@@ -191,7 +191,7 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_prompt},
         ],
-        "max_output_tokens": 1024,
+        "max_output_tokens": 4096,
     }
     resp = requests.post(ENDPOINT, headers=headers, json=payload, timeout=60)
     resp.raise_for_status()
