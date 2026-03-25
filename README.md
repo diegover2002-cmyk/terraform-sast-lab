@@ -93,3 +93,59 @@ terraform/
 docs/compliance/
   exceptions-registry.json
 ```
+
+---
+
+## Arquitectura de la solución
+
+> **Diagrama interactivo en FigJam:** [Abrir en FigJam](https://www.figma.com/online-whiteboard/create-diagram/3c2635d5-c1c6-47f3-b78e-8b5cdf4535e9?utm_source=claude&utm_content=edit_in_figjam)
+
+```mermaid
+flowchart LR
+  PR(["Pull Request\nterraform/**"])
+
+  subgraph GHA["GitHub Actions — Security Scan"]
+    direction TB
+    L1["Layer 1 — Checkov\nAnálisis estático IaC\nTodos los módulos"]
+    L2["Layer 2 — tfsec\nReglas deterministas\nMódulos gold-tier"]
+    L3["Layer 3 — Azure OpenAI\nAnálisis semántico\nvs controles MCSB Must"]
+    EX[("exceptions-registry.json\nExcepciones aprobadas")]
+    GATE{"Gate\ndecision"}
+    ENFORCE["Enforce gate\nexit 1 si BLOCKED"]
+    COMMENT["Comentario unificado\nen el PR"]
+  end
+
+  BP["Branch Protection\nRequiere: Security Scan OK"]
+  PASS(["Merge\npermitido"])
+  BLOCK(["Merge\nBLOCKEADO"])
+
+  PR --> L1
+  PR --> L2
+  PR --> L3
+  EX --> L3
+  L3 --> GATE
+  GATE -->|PASS| COMMENT
+  GATE -->|BLOCKED| ENFORCE
+  ENFORCE --> COMMENT
+  L1 --> COMMENT
+  L2 --> COMMENT
+  COMMENT --> BP
+  BP -->|check passed| PASS
+  BP -->|check failed| BLOCK
+```
+
+### Flujo detallado
+
+| Paso | Herramienta | Scope | Acción si falla |
+|------|-------------|-------|-----------------|
+| 1 | **Checkov** | Todos los archivos `terraform/` | Reporta en comentario (no bloquea solo) |
+| 2 | **tfsec** | Módulos gold-tier (`storage`, `keyvault`, `aks`) | Reporta en comentario |
+| 3 | **Azure OpenAI** | Módulos gold-tier | Emite veredicto `PASS` / `BLOCKED` |
+| 4 | **Gate enforcement** | — | `exit 1` si el veredicto es `BLOCKED` |
+| 5 | **Branch protection** | Rama `main` | Bloquea el merge hasta que `Security Scan` pase |
+
+### Excepciones
+
+Las excepciones conocidas y aceptadas se registran en `docs/compliance/exceptions-registry.json`.
+El script de Azure OpenAI las carga antes de evaluar para evitar falsos positivos sobre riesgos ya gestionados.
+
