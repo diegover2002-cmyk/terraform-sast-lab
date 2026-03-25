@@ -180,9 +180,17 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
         '[{"id":"ST-001","status":"PASS","finding":"allow_nested_items_to_be_public = false"}]'
     )
     user_prompt = (
-        f"Service: {service_name}\n\n"
-        f"Must-priority MCSB controls to check:\n{controls_table}\n\n"
-        f"Terraform code:\n```hcl\n{tf_code}\n```"
+        f"Service: {service_name}
+
+"
+        f"Must-priority MCSB controls to check:
+{controls_table}
+
+"
+        f"Terraform code:
+```hcl
+{tf_code}
+```"
     )
     headers = {"Content-Type": "application/json", "api-key": API_KEY}
     payload = {
@@ -209,6 +217,8 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
                 raw_text += content
 
     raw_text = re.sub(r"```[a-z]*", "", raw_text).strip()
+    if not raw_text:
+        raise ValueError(f"Empty output from API. Full response: {json.dumps(result)[:500]}")
     return json.loads(raw_text)
 
 
