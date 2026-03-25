@@ -255,6 +255,54 @@ El reporte se escribe en `ai-check-output.txt`. El workflow lo consume en dos pa
 
 
 
+---
+
+## Cobertura por tipo de control
+
+No todos los controles MCSB pueden ser verificados por herramientas estáticas.
+El pipeline cubre los tres casos:
+
+| Tipo de control | Checkov | tfsec | Azure OpenAI |
+|---|---|---|---|
+| `IaC Checkable: Yes` + regla Checkov | ✅ | ✅ (si aplica) | ✅ |
+| `IaC Checkable: Partial` o regla `Custom` | ⚠️ parcial | ❌ | ✅ **única cobertura** |
+| Sin regla Checkov ni tfsec | ❌ | ❌ | ✅ **única cobertura** |
+
+### Por qué importa la capa de IA
+
+Los controles sin regla automática son frecuentemente los más difíciles de verificar:
+políticas de acceso, configuraciones de logging, restricciones de red complejas, etc.
+
+Un ejemplo real del repo:
+
+```
+ST-008 — Diagnostic logging enabled
+  IaC Checkable: Partial
+  Checkov: Custom          ← sin regla estándar
+  Cobertura: solo Azure OpenAI
+```
+
+En este caso, si el módulo no configura `azurerm_monitor_diagnostic_setting`,
+**solo la IA lo detectará** como FAIL y bloqueará el merge.
+
+### Flujo de cobertura para un control sin Checkov
+
+```
+Control Must sin regla Checkov
+        │
+        ├─ Checkov   → no lo evalúa (sin regla)
+        ├─ tfsec     → no lo evalúa (sin regla)
+        └─ OpenAI    → SÍ analiza semánticamente el HCL  ← única cobertura
+                            │
+                            ├─ FAIL + excepción MCSB registrada  →  EXCEPTION
+                            ├─ FAIL sin excepción                →  Gate: BLOCKED
+                            └─ PASS / WARN                       →  continúa
+```
+
+> Para registrar una excepción sobre un control sin Checkov, usa el ID MCSB
+> (`"MCSB-LT-3"`) en lugar del ID de regla Checkov en `exceptions-registry.json`.
+
+
 ## Estructura
 
 ```
