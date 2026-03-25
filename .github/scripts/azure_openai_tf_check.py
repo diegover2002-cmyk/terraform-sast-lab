@@ -180,17 +180,9 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
         '[{"id":"ST-001","status":"PASS","finding":"allow_nested_items_to_be_public = false"}]'
     )
     user_prompt = (
-        f"Service: {service_name}
-
-"
-        f"Must-priority MCSB controls to check:
-{controls_table}
-
-"
-        f"Terraform code:
-```hcl
-{tf_code}
-```"
+        f"Service: {service_name}\n\n"
+        f"Must-priority MCSB controls to check:\n{controls_table}\n\n"
+        f"Terraform code:\n```hcl\n{tf_code}\n```"
     )
     headers = {"Content-Type": "application/json", "api-key": API_KEY}
     payload = {
@@ -202,12 +194,12 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
         "max_output_tokens": 1024,
     }
     resp = requests.post(ENDPOINT, headers=headers, json=payload, timeout=60)
-    print(f"API status: {resp.status_code} | content-type: {resp.headers.get('content-type','?')} | body: {resp.text[:300]}")
+    print(f"[DEBUG] status={resp.status_code} ct={resp.headers.get('content-type','?')} body={resp.text[:300]}", flush=True)
     resp.raise_for_status()
     try:
         result = resp.json()
-    except Exception as json_err:
-        raise ValueError(f"API returned non-JSON (status={resp.status_code}): {resp.text[:300]}") from json_err
+    except Exception as je:
+        raise ValueError(f"Non-JSON response (status={resp.status_code}): {resp.text[:300]}") from je
 
     raw_text = ""
     for item in result.get("output", []):
@@ -222,7 +214,7 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
 
     raw_text = re.sub(r"```[a-z]*", "", raw_text).strip()
     if not raw_text:
-        raise ValueError(f"Empty output from API. Full response keys: {list(result.keys())} | {json.dumps(result)[:400]}")
+        raise ValueError(f"Empty output. Response keys={list(result.keys())} body={json.dumps(result)[:400]}")
     return json.loads(raw_text)
 
 
