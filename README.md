@@ -68,6 +68,168 @@ git push origin demo/insecure-storage-config
 | `ARM_SUBSCRIPTION_ID` | |
 | `ARM_TENANT_ID` | |
 
+
+---
+
+## Lógica del script de análisis IA
+
+> **Diagrama interactivo en FigJam:** [Abrir en FigJam](https://www.figma.com/online-whiteboard/create-diagram/f2a02b17-ef7f-4f0d-9cc2-72d9ab40f0ca?utm_source=claude&utm_content=edit_in_figjam)
+
+El script `.github/scripts/azure_openai_tf_check.py` es el núcleo del sistema.
+Orquesta tres fuentes de datos y toma la decisión de bloquear o aprobar el merge.
+
+```mermaid
+sequenceDiagram
+  participant GHA as GitHub Actions
+  participant Script as azure_openai_tf_check.py
+  participant Exc as exceptions-registry.json
+  participant Ctrl as controls/azure-{service}/controls.md
+  participant TF as terraform/modules/{service}/main.tf
+  participant TFSEC as tfsec-output.json
+  participant AI as Azure OpenAI API
+  participant Out as ai-check-output.txt
+
+  GHA->>Script: python script.py --changed-files ... --tfsec-output ...
+
+  Script->>Exc: load_exempt_controls()
+  Exc-->>Script: set de IDs activos y no expirados
+
+  loop for each changed gold-tier module
+    Script->>Ctrl: extract_must_controls()
+    Note over Ctrl: Parsea tabla markdown, filtra priority=Must
+    Ctrl-->>Script: lista de controles (id, domain, severity, checkov rule)
+
+    Script->>TF: open + read código fuente HCL
+    TF-->>Script: string con el código .tf
+
+    Script->>TFSEC: parse_tfsec_findings()
+    TFSEC-->>Script: hallazgos filtrados por módulo
+
+    Script->>AI: POST /openai/responses
+system: prompt revisor
+user: tabla controles + código HCL
+    AI-->>Script: JSON array [{id, status, finding}]
+PASS / FAIL / WARN / EXCEPTION
+
+    Script->>Script: cruzar FAILs con exempt set
+FAIL + excepción registrada -> EXCEPTION
+
+    Script->>Script: acumular total_fails (solo FAILs sin excepción)
+  end
+
+  Script->>Out: escribir reporte markdown
++ banner Gate: PASSED / BLOCKED
+
+  alt total_fails > 0
+    Script->>GHA: exit(1) -> job falla -> merge BLOQUEADO
+  else total_fails == 0
+    Script->>GHA: exit(0) -> job OK -> merge PERMITIDO
+  end
+```
+
+### Paso a paso
+
+#### 1. Carga de excepciones aprobadas
+
+Lo primero que hace el script es leer `docs/compliance/exceptions-registry.json` y construir un **set de identificadores exentos**.
+
+```
+exceptions-registry.json
+└── registry[]
+    ├── status: "active"          ← solo activas
+    ├── expires_at: "2026-12-31"  ← no expiradas
+    └── policy_controls[]
+        ├── "CKV_AZURE_35"        ← ID de regla Checkov
+        └── "MCSB-NS-2"           ← ID de control MCSB
+```
+
+Cualquier hallazgo que coincida con un ID del set **no cuenta como FAIL** — se marca como `🔵 EXCEPTION`.
+
+---
+
+#### 2. Identificar módulos gold-tier cambiados
+
+El script recibe la lista de archivos modificados en el PR.
+Solo procesa los tres módulos de máxima criticidad:
+
+| Módulo modificado | Controles MCSB que se aplican |
+|---|---|
+| `terraform/modules/storage/` | `controls/azure-storage/controls.md` |
+| `terraform/modules/keyvault/` | `controls/azure-key-vault/controls.md` |
+| `terraform/modules/aks/` | `controls/azure-aks/controls.md` |
+
+---
+
+#### 3. Extracción de controles MCSB Must-priority
+
+Por cada módulo, el script parsea su `controls.md` correspondiente.
+El archivo contiene una tabla con todos los controles del servicio; el script **filtra solo los de prioridad `Must`** (los obligatorios).
+
+```
+controls/azure-storage/controls.md
+└── tabla markdown
+    ├── ST-001 | NS | High  | Must | Disable public blob access | CKV_AZURE_190
+    ├── ST-002 | DP | High  | Must | Enforce TLS 1.2+           | CKV_AZURE_36
+    ├── ST-003 | NS | Medium| Should | ...                       ← ignorado
+    └── ...
+```
+
+El resultado es una lista estructurada con `id`, `domain`, `severity` y la regla Checkov asociada.
+
+---
+
+#### 4. Llamada a Azure OpenAI
+
+Con el código HCL del módulo y la tabla de controles, el script construye un prompt y llama a **Azure OpenAI**:
+
+- **System prompt:** instruye al modelo a actuar como revisor de seguridad Terraform, y a responder únicamente con un JSON array.
+- **User prompt:** tabla de controles Must-priority + código `.tf` completo del módulo.
+
+La respuesta esperada es:
+
+```json
+[
+  { "id": "ST-001", "status": "PASS",  "finding": "allow_nested_items_to_be_public = false" },
+  { "id": "ST-002", "status": "FAIL",  "finding": "min_tls_version = TLS1_0, should be TLS1_2" },
+  { "id": "ST-003", "status": "WARN",  "finding": "network_rules not defined, defaults may be permissive" }
+]
+```
+
+Cada control recibe uno de cuatro estados:
+
+| Estado | Icono | Significado |
+|---|---|---|
+| `PASS` | ✅ | Control correctamente implementado |
+| `FAIL` | ❌ | Control ausente o mal configurado |
+| `WARN` | ⚠️ | Cumplimiento parcial o condicional |
+| `EXCEPTION` | 🔵 | Anotación `checkov:skip` detectada en el código |
+
+---
+
+#### 5. Cruce con el registro de excepciones
+
+Tras recibir los resultados de la IA, el script recorre cada `FAIL` y lo compara contra el **set de excepciones** cargado en el paso 1.
+
+```
+FAIL en ST-002 (CKV_AZURE_36)
+    └── ¿CKV_AZURE_36 está en exempt set?
+            ├── SÍ → estado cambia a EXCEPTION [registered exception: CKV_AZURE_36]
+            └── NO → se mantiene FAIL → suma a total_fails
+```
+
+---
+
+#### 6. Decisión de gate y salida
+
+```
+total_fails == 0  →  Gate: PASSED  →  exit(0)  →  merge PERMITIDO
+total_fails  > 0  →  Gate: BLOCKED →  exit(1)  →  merge BLOQUEADO
+```
+
+El reporte completo se escribe en `ai-check-output.txt` y el workflow lo lee para:
+1. **Enforce gate step:** si contiene `Gate: BLOCKED` → falla el job (`exit 1`)
+2. **Post report step:** publica o actualiza el comentario unificado en el PR
+
 ## Estructura
 
 ```
