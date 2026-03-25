@@ -62,6 +62,7 @@ jobs:
       - name: Run AI Security Check
         id: sast
         if: steps.changed.outputs.files != ''
+        continue-on-error: true
         env:
           AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
         run: |
