@@ -134,8 +134,25 @@ El script carga este fichero en tiempo de ejecución. Las excepciones expiradas 
 - IDs de excepción: `EXC-{NNN}` secuencial
 - Prioridades MCSB: `Must` > `Should` > `Nice`
 - Severidades: `High` > `Medium` > `Low`
-- Ramas de demo: `demo/{descripcion-kebab-case}`
 - Commits: seguir Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`)
+
+### Estrategia de ramas (GitFlow simplificado)
+
+| Rama | Propósito | PR destino |
+|---|---|---|
+| `main` | Producción — solo releases | — |
+| `develop` | Integración de features | `main` (release) |
+| `feature/{descripcion}` | Nueva funcionalidad | `develop` |
+| `fix/{descripcion}` | Corrección de bugs | `develop` |
+| `chore/{descripcion}` | Mantenimiento / CI | `develop` |
+| `demo/{descripcion}` | Demos del pipeline | `develop` |
+| `release/{version}` | Preparación de release | `main` |
+
+**Reglas:**
+- **NUNCA** abrir PR directamente a `main` desde una rama de feature/fix/chore
+- El workflow `validate-pr-target.yml` rechaza PRs a `main` que no vengan de `develop` o `release/*`
+- El workflow `security-check.yml` solo corre en PRs a `develop`
+- Para lanzar una release: PR de `develop` → `main`, con tag semver (`v1.0.0`)
 
 ---
 

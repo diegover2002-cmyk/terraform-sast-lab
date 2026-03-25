@@ -14,7 +14,7 @@ name: "🔒 Terraform Security Check"
 
 on:
   pull_request:
-    branches: [main]
+    branches: [develop]
     paths:
       - "terraform/**"
 
@@ -206,3 +206,101 @@ jobs:
                 body: body.slice(0, 65000),
               });
             }
+
+  # ── Plan-level Checkov (requires ARM credentials) ────────────────────────────
+  checkov-tfplan:
+    name: "Checkov (Terraform plan)"
+    runs-on: ubuntu-latest
+    needs: security
+    if: always()
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Checkov
+        run: pip install checkov
+
+      - name: Check ARM credentials availability
+        id: arm-creds
+        run: |
+          if [[ -n "$ARM_CLIENT_ID" ]]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "ARM credentials detected — running plan-level Checkov."
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "ARM credentials not configured — falling back to focused static scan."
+          fi
+        env:
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+
+      # ── Plan-level path: terraform plan → JSON → checkov ─────────────────────
+      - name: Setup Terraform
+        if: steps.arm-creds.outputs.available == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.7"
+          terraform_wrapper: false
+
+      - name: Terraform Init (CI environment)
+        if: steps.arm-creds.outputs.available == 'true'
+        working-directory: terraform/environments/ci
+        run: terraform init -backend=false
+        env:
+          ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID }}
+          ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET }}
+          ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: Terraform Plan
+        if: steps.arm-creds.outputs.available == 'true'
+        working-directory: terraform/environments/ci
+        run: |
+          terraform plan \
+            -out=tfplan.out \
+            -refresh=false \
+            -input=false
+        env:
+          ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID }}
+          ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET }}
+          ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+        continue-on-error: true
+
+      - name: Convert plan to JSON
+        if: steps.arm-creds.outputs.available == 'true'
+        working-directory: terraform/environments/ci
+        run: terraform show -json tfplan.out > tfplan.json
+
+      - name: Checkov — plan-level analysis
+        if: steps.arm-creds.outputs.available == 'true'
+        run: |
+          checkov \
+            --file terraform/environments/ci/tfplan.json \
+            --framework terraform_plan \
+            --output cli \
+            --soft-fail 2>&1 | tee checkov-plan-output.txt
+        continue-on-error: true
+
+      # ── Fallback path: focused static scan when no ARM creds ─────────────────
+      - name: Checkov — focused static scan (fallback)
+        if: steps.arm-creds.outputs.available != 'true'
+        run: |
+          echo "## Checkov static scan — gold-tier modules"
+          for module in storage keyvault aks; do
+            echo ""
+            echo "### terraform/modules/${module}/"
+            checkov -d terraform/modules/${module} \
+              --framework terraform \
+              --compact \
+              --soft-fail 2>&1
+          done | tee checkov-plan-output.txt
+        continue-on-error: true
+
+      - name: Upload Checkov plan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-plan-report
+          path: checkov-plan-output.txt
+          if-no-files-found: ignore
