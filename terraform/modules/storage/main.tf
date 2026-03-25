@@ -11,10 +11,10 @@ resource "azurerm_storage_account" "main" {
   account_tier             = "Standard"
   account_replication_type = "LRS"
 
-  min_tls_version                 = "TLS1_2"
-  allow_nested_items_to_be_public = false
-  https_traffic_only_enabled      = true
-  shared_access_key_enabled       = true  # Required by Function App runtime (ST-011 accepted)
+  min_tls_version                 = "TLS1_0"   # SAST-FAIL: ST-003 — must be TLS1_2
+  allow_nested_items_to_be_public = true        # SAST-FAIL: ST-007 — public blob access
+  https_traffic_only_enabled      = false       # SAST-FAIL: ST-002 — HTTP allowed
+  shared_access_key_enabled       = true        # SAST-FAIL: ST-011 — SAS keys enabled
 
   blob_properties {
     delete_retention_policy {
