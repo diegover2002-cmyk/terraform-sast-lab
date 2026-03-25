@@ -11,7 +11,7 @@ resource "azurerm_storage_account" "main" {
   account_tier             = "Standard"
   account_replication_type = "LRS"
 
-  min_tls_version                 = "TLS1_2"
+  min_tls_version                 = "TLS1_0"  # DEMO: insecure — triggers ST-003 FAIL
   allow_nested_items_to_be_public = false
   https_traffic_only_enabled      = true
   shared_access_key_enabled       = true  # Required by Function App runtime (ST-011 accepted)
