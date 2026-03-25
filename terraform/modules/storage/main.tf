@@ -15,6 +15,7 @@ resource "azurerm_storage_account" "main" {
   allow_nested_items_to_be_public = false
   https_traffic_only_enabled      = true
   shared_access_key_enabled       = true  # Required by Function App runtime (ST-011 accepted)
+  cross_tenant_replication_enabled = false  # ST-012: prevent cross-tenant data exfiltration
 
   blob_properties {
     delete_retention_policy {
