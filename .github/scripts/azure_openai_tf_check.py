@@ -227,6 +227,11 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
                 raw_text += content
 
     raw_text = re.sub(r"```[a-z]*", "", raw_text).strip()
+    if not raw_text:
+        raise ValueError(
+            "API returned empty output — model may not have produced a response. "
+            "Check that the Azure OpenAI deployment is active and the model supports this payload format."
+        )
     return json.loads(raw_text)
 
 
