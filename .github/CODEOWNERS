@@ -1,0 +1,14 @@
+# CODEOWNERS — revisión requerida para ficheros críticos de seguridad
+#
+# Cualquier PR que modifique estos paths requiere aprobación explícita
+# del propietario antes de poder hacer merge.
+
+# Excepciones aprobadas — cualquier nueva excepción debe ser revisada
+docs/compliance/exceptions-registry.json @diegover2002-cmyk
+
+# Controles MCSB — fuente de verdad de seguridad
+controls/ @diegover2002-cmyk
+
+# Script de análisis IA y pipeline de seguridad
+.github/scripts/ @diegover2002-cmyk
+.github/workflows/security-check.yml @diegover2002-cmyk
