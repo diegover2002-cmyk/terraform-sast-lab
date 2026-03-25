@@ -188,21 +188,76 @@
       "remediation_path": "Upgrade to EP1 + zone redundancy when SLA requirements demand >99.9% availability.",
       "risk_level": "info",
       "audit_notes": "Structural Azure platform limitation. Not a security risk. Availability trade-off accepted for cost optimization. No Azure Policy exemption needed — not covered by initiative."
+    },
+    {
+      "id": "EXC-008",
+      "status": "active",
+      "resource": "stlolnotifierdevh4dx",
+      "resource_type": "azurerm_storage_account",
+      "policy_controls": ["CKV2_AZURE_40", "MCSB-IM-1"],
+      "azure_policy_exemption_id": "/subscriptions/4f23201e-3333-4d6a-879b-6a6bea485b9f/resourceGroups/rg-lolnotifier-dev/providers/Microsoft.Authorization/policyExemptions/EXC-008-storage-shared-key",
+      "azure_policy_exemption_category": "Mitigated",
+      "title": "Storage Account shared key access enabled — Function App Consumption plan runtime requirement",
+      "justification": "Azure Function App on Y1 Consumption plan requires shared key access to the storage account for host coordination, state management, blob trigger bindings, and file share mounting (host.json, azure-webjobs-* containers). Disabling shared key access breaks the Function App runtime entirely. This is a documented Azure platform limitation: shared key cannot be disabled when a Function App on Consumption plan uses the storage account as its backing store.",
+      "compensating_controls": [
+        "Storage access key stored in Azure Key Vault (not hardcoded)",
+        "HTTPS-only traffic enforced (https_traffic_only_enabled = true)",
+        "Minimum TLS 1.2 enforced",
+        "Public blob access disabled (allow_nested_items_to_be_public = false)",
+        "All access logged via storage account diagnostic settings (operational)",
+        "Key rotation policy enforced via Key Vault"
+      ],
+      "requestor": "diego.estebanrguez@gmail.com",
+      "approver": "diego.estebanrguez@gmail.com",
+      "created_at": "2026-03-25T00:00:00Z",
+      "expires_at": "2026-09-25T00:00:00Z",
+      "review_date": "2026-09-01",
+      "reference_pr": "https://github.com/diegover2002-cmyk/terraform-sast-lab/pull/8",
+      "remediation_path": "Migrate to managed identity-based access when Azure Function App Consumption plan gains support for storage-account-level RBAC-only authentication. Track Azure feedback item for Y1 plan identity support.",
+      "risk_level": "low",
+      "audit_notes": "Shared key is required by Azure Function App runtime on Y1 plan. Cannot be disabled without breaking the application. Compensating control: key stored in Key Vault, not exposed in configuration. Azure Policy exemption registered 2026-03-25."
+    },
+    {
+      "id": "EXC-009",
+      "status": "active",
+      "resource": "stlolnotifierdevh4dx",
+      "resource_type": "azurerm_storage_account",
+      "policy_controls": ["MCSB-LT-3"],
+      "azure_policy_exemption_id": null,
+      "azure_policy_exemption_category": null,
+      "title": "Storage Account diagnostic logging not configured in Terraform module — PoC scope limitation",
+      "justification": "The azurerm_monitor_diagnostic_setting resource for the storage account blob service is outside the scope of this gold-tier Terraform module. Diagnostic settings are managed as a separate operational concern in the monitoring module to avoid coupling infrastructure modules to Log Analytics workspace dependencies. This PoC does not include a monitoring module; diagnostic settings are configured manually in Azure.",
+      "compensating_controls": [
+        "Azure Storage Account diagnostic settings enabled manually in Azure portal",
+        "StorageRead, StorageWrite, StorageDelete log categories enabled",
+        "Logs retained in Log Analytics workspace for 30 days",
+        "Azure Monitor alerts configured for unauthorized access patterns"
+      ],
+      "requestor": "diego.estebanrguez@gmail.com",
+      "approver": "diego.estebanrguez@gmail.com",
+      "created_at": "2026-03-25T00:00:00Z",
+      "expires_at": "2026-09-25T00:00:00Z",
+      "review_date": "2026-09-01",
+      "reference_pr": "https://github.com/diegover2002-cmyk/terraform-sast-lab/pull/8",
+      "remediation_path": "Create a monitoring Terraform module that manages azurerm_monitor_diagnostic_setting resources for all gold-tier modules. Reference Log Analytics workspace via data source to decouple from infrastructure modules.",
+      "risk_level": "low",
+      "audit_notes": "Diagnostic settings are configured outside Terraform scope for this PoC. Logging is active in Azure but not IaC-managed. No Azure Policy exemption needed — MCSB-LT-3 has no built-in policy assignment in this subscription."
     }
   ],
   "summary": {
-    "total_exceptions": 7,
-    "active": 6,
+    "total_exceptions": 9,
+    "active": 8,
     "remediated": 1,
+    "last_updated": "2026-03-25",
     "by_risk_level": {
       "critical": 0,
       "high": 0,
       "medium": 1,
-      "low": 4,
+      "low": 6,
       "info": 1
     },
-    "azure_policy_exemptions_registered": 4,
-    "structural_platform_exceptions": 4,
+    "azure_policy_exemptions_registered": 5,
+    "structural_platform_exceptions": 5,
     "cost_constraint_exceptions": 2,
     "temporary_ci_exceptions": 1
   }

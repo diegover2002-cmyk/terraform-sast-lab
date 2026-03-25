@@ -323,6 +323,7 @@ def main():
         "> Gold-tier modules: Storage Account · Key Vault · AKS\n",
     ]
     total_fails = 0
+    api_errors  = 0
 
     if not modules_to_check:
         report_sections.append("_No gold-tier Terraform changes detected._\n")
@@ -361,8 +362,11 @@ def main():
             try:
                 ai_findings = call_openai(tf_code, controls_to_compact_table(controls_meta), service_name)
             except Exception as e:
+                api_errors += 1
                 report_sections.append(
-                    f"#### `{tf_file}` — {service_name}\n\n❌ API error: `{e}`\n\n---\n")
+                    f"#### `{tf_file}` — {service_name}\n\n"
+                    f"❌ **AI check failed** — cannot confirm security posture for this module.\n"
+                    f"Error: `{e}`\n\n---\n")
                 print(f"   API error: {e}", file=sys.stderr)
                 continue
 
@@ -374,8 +378,19 @@ def main():
             report_sections.append(section)
 
     if modules_to_check:
-        banner = "### ✅ Gate: PASSED — no unregistered FAIL findings\n" if total_fails == 0 else \
-                 f"### ❌ Gate: BLOCKED — {total_fails} FAIL finding(s) must be remediated or registered before merging\n"
+        if api_errors > 0:
+            banner = (
+                f"### ❌ Gate: BLOCKED — AI security check could not complete "
+                f"({api_errors} API error(s)); cannot confirm security posture. "
+                f"Investigate Azure OpenAI connectivity before merging.\n"
+            )
+        elif total_fails == 0:
+            banner = "### ✅ Gate: PASSED — no unregistered FAIL findings\n"
+        else:
+            banner = (
+                f"### ❌ Gate: BLOCKED — {total_fails} FAIL finding(s) must be "
+                f"remediated or registered in exceptions-registry.json before merging\n"
+            )
         report_sections.insert(2, banner)
 
     full_report = "\n".join(report_sections)
@@ -385,7 +400,7 @@ def main():
     print(f"\nReport written to {args.output}")
     print(full_report)
 
-    if total_fails > 0:
+    if total_fails > 0 or api_errors > 0:
         sys.exit(1)
 
 
