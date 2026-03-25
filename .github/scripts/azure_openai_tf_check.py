@@ -29,6 +29,7 @@ ENDPOINT = (
 MODEL = "gpt-5.1-codex-mini"
 
 EXCEPTIONS_REGISTRY = "docs/compliance/exceptions-registry.json"
+POLICY_MAPPING_FILE = "docs/compliance/policy-mapping.json"
 
 MODULE_CONTROLS_MAP = {
     "terraform/modules/storage":  "controls/azure-storage/controls.md",
@@ -44,6 +45,23 @@ MODULE_NAMES = {
 
 STATUS_ICON   = {"PASS": "✅", "FAIL": "❌", "WARN": "⚠️", "EXCEPTION": "🔵"}
 TFSEC_SEV_ICON = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}
+
+# ── Policy mapping ────────────────────────────────────────────────────────────
+
+def load_policy_mapping(mapping_file: str) -> dict[str, dict]:
+    """
+    Loads docs/compliance/policy-mapping.json.
+    Returns a dict keyed by control_id, e.g.:
+      {"ST-001": {"azure_policy_definition_id": "...", "azure_policy_display_name": "...", ...}}
+    Returns empty dict if the file is missing (non-blocking).
+    """
+    try:
+        with open(mapping_file, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    return {c["control_id"]: c for c in data.get("controls", [])}
+
 
 # ── Exceptions registry ────────────────────────────────────────────────────────
 
@@ -215,16 +233,18 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
 # ── Report rendering ──────────────────────────────────────────────────────────
 
 def render_module_report(
-    module_dir:    str,
-    tf_file:       str,
-    ai_findings:   list[dict],
-    controls_meta: list[dict],
-    exempt:        set[str],
-    tfsec_section: str,
+    module_dir:     str,
+    tf_file:        str,
+    ai_findings:    list[dict],
+    controls_meta:  list[dict],
+    exempt:         set[str],
+    tfsec_section:  str,
+    policy_mapping: dict[str, dict] | None = None,
 ) -> tuple[str, int]:
     """Returns (markdown_section, fail_count). Demotes FAIL→EXCEPTION when registered."""
     service_name = MODULE_NAMES.get(module_dir, module_dir)
     meta_by_id   = {c["id"]: c for c in controls_meta}
+    policy_map   = policy_mapping or {}
 
     for f in ai_findings:
         if f["status"] == "FAIL":
@@ -238,19 +258,35 @@ def render_module_report(
     warn_n = sum(1 for f in ai_findings if f["status"] == "WARN")
     exc_n  = sum(1 for f in ai_findings if f["status"] == "EXCEPTION")
 
+    use_policy_col = bool(policy_map)
+    if use_policy_col:
+        header = "| Control | Domain | Severity | Status | Finding | Azure Policy |"
+        sep    = "|---|---|---|---|---|---|"
+    else:
+        header = "| Control | Domain | Severity | Status | Finding |"
+        sep    = "|---|---|---|---|---|"
+
     lines = [
         f"#### `{tf_file}` — {service_name}", "",
         tfsec_section,
         "**AI semantic analysis (MCSB Must-priority):**\n",
-        "| Control | Domain | Severity | Status | Finding |",
-        "|---|---|---|---|---|",
+        header,
+        sep,
     ]
     for f in ai_findings:
-        meta = meta_by_id.get(f["id"], {})
-        lines.append(
+        meta   = meta_by_id.get(f["id"], {})
+        row    = (
             f"| {f['id']} | {meta.get('domain','—')} | {meta.get('severity','—')} "
             f"| {STATUS_ICON.get(f['status'],'❓')} {f['status']} | {f.get('finding','')} |"
         )
+        if use_policy_col:
+            pm = policy_map.get(f["id"], {})
+            pol_id   = pm.get("azure_policy_definition_id", "")
+            pol_name = pm.get("azure_policy_display_name", "—")
+            policy_cell = f"`{pol_id}`" if pol_id else "—"
+            row += f" {pol_name} {policy_cell} |"
+        lines.append(row)
+
     lines += ["", f"**Summary: {pass_n} PASS · {fail_n} FAIL · {warn_n} WARN · {exc_n} EXCEPTION**",
               "", "---", ""]
     return "\n".join(lines), fail_n
@@ -269,8 +305,10 @@ def main():
     parser.add_argument("--tfsec-output",  default=None)
     args = parser.parse_args()
 
-    exempt = load_exempt_controls(EXCEPTIONS_REGISTRY)
+    exempt         = load_exempt_controls(EXCEPTIONS_REGISTRY)
+    policy_mapping = load_policy_mapping(POLICY_MAPPING_FILE)
     print(f"Loaded {len(exempt)} exempt control identifiers from registry")
+    print(f"Loaded {len(policy_mapping)} Azure Policy mappings")
 
     modules_to_check: dict[str, str] = {}
     for tf_file in args.changed_files:
@@ -329,7 +367,9 @@ def main():
                 continue
 
             section, module_fails = render_module_report(
-                module_dir, tf_file, ai_findings, controls_meta, exempt, tfsec_section)
+                module_dir, tf_file, ai_findings, controls_meta, exempt, tfsec_section,
+                policy_mapping=policy_mapping if module_dir == "terraform/modules/storage" else None,
+            )
             total_fails += module_fails
             report_sections.append(section)
 
