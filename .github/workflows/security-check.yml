@@ -113,6 +113,17 @@ jobs:
           printf '_No gold-tier Terraform changes detected — AI Security Check skipped._\n' \
             > ai-check-output.txt
 
+
+      # ── Enforce gate decision ─────────────────────────────────────────────
+      - name: Enforce security gate
+        if: always()
+        run: |
+          if [ -f ai-check-output.txt ] && grep -q "Gate: BLOCKED" ai-check-output.txt; then
+            echo "::error::Security gate BLOCKED — unregistered FAIL findings must be remediated or registered in exceptions-registry.json before merging."
+            exit 1
+          fi
+          echo "Security gate passed."
+
       # ── Post unified report ───────────────────────────────────────────────
       - name: Post unified security report
         if: always()
