@@ -293,7 +293,7 @@ def extract_plan_resources(plan_file: str, module_dir: str) -> str:
         # Only scalar (non-dict, non-list) top-level attributes
         lines = [f"resource: {rc.get('address', target_type)}"]
         for k, v in after.items():
-            if k in _SKIP or isinstance(v, (dict, list)):
+            if k in _SKIP or v is None or isinstance(v, (dict, list)):
                 continue
             lines.append(f"  {k}: {json.dumps(v)}")
         if len(lines) > 1:
