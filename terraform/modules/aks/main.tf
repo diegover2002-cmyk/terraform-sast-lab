@@ -74,6 +74,10 @@ resource "azurerm_kubernetes_cluster" "main" {
     log_analytics_workspace_id = var.log_analytics_workspace_id
   }
 
+  # AK-012 (Should — defence-in-depth: removes unused container images from nodes)
+  image_cleaner_enabled        = true
+  image_cleaner_interval_hours = 48
+
   tags = var.tags
 }
 
