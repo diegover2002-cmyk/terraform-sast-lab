@@ -264,6 +264,12 @@ resource "azurerm_kubernetes_cluster" "good" {
 | **Checkov** | Custom — assert `azurerm_monitor_diagnostic_setting` targets AKS cluster ID with `kube-audit` category |
 
 ```hcl
+# Insecure — no diagnostic setting for AKS
+resource "azurerm_kubernetes_cluster" "bad" {
+  # ... cluster config ...
+}
+# (no azurerm_monitor_diagnostic_setting referencing this cluster)
+
 # Secure
 resource "azurerm_monitor_diagnostic_setting" "aks_diag" {
   name                       = "diag-aks"
@@ -283,6 +289,13 @@ resource "azurerm_monitor_diagnostic_setting" "aks_diag" {
   }
 }
 ```
+
+**AI Analysis Guidance** (`IaC Checkable: Partial` — Checkov has no built-in rule for this; full semantic analysis required):
+
+- **PASS**: An `azurerm_monitor_diagnostic_setting` resource exists in the Terraform file whose `target_resource_id` references the `azurerm_kubernetes_cluster`, AND it includes **both** `enabled_log { category = "kube-audit" }` AND `enabled_log { category = "kube-audit-admin" }` at minimum. Additional categories (`kube-apiserver`, `kube-controller-manager`, `kube-scheduler`, `guard`) improve coverage but are not required for PASS.
+- **FAIL**: No `azurerm_monitor_diagnostic_setting` targeting the AKS cluster is present, OR a diagnostic setting exists but is missing both `kube-audit` and `kube-audit-admin` categories (these two are the security-critical ones for detecting unauthorized API calls).
+- **WARN**: A diagnostic setting exists and targets the cluster but uses the deprecated `log {}` block instead of `enabled_log {}`, or `kube-audit` is enabled but `kube-audit-admin` is absent (partial coverage).
+- **Note**: The `microsoft_defender` block (AK-010) is a separate control — its presence does not satisfy this diagnostic logging requirement.
 
 ---
 
@@ -385,6 +398,13 @@ resource "azurerm_kubernetes_cluster" "good" {
   }
 }
 ```
+
+**AI Analysis Guidance** (`IaC Checkable: Partial`, `Applies: Conditional` — only required when AKS exposes public HTTP/HTTPS ingress):
+
+- **PASS**: `azurerm_kubernetes_cluster` has an `ingress_application_gateway` block referencing an `azurerm_application_gateway` resource with `sku.tier = "WAF_v2"` and `waf_configuration.enabled = true` and `waf_configuration.firewall_mode = "Prevention"`.
+- **WARN** (acceptable): No `ingress_application_gateway` block is present — mark WARN if the cluster appears to be internal-only (e.g. `api_server_access_profile.authorized_ip_ranges` is set to private ranges only), since WAF may be unnecessary without public ingress.
+- **FAIL**: `ingress_application_gateway` is present but references an Application Gateway with `sku.tier = "Standard_v2"` (no WAF), or `waf_configuration.enabled = false`, or `waf_configuration.firewall_mode = "Detection"` (not blocking).
+- **Note**: This control is Should-priority (not Must). Mark WARN rather than FAIL if WAF is absent but the cluster has no signs of public HTTP ingress. If uncertain, default to WARN.
 
 ---
 

@@ -43,6 +43,8 @@ jobs:
           checkov -d terraform/ \
             --framework terraform \
             --output cli \
+            --output json \
+            --output-file-path checkov-results/ \
             --soft-fail 2>&1 | tee checkov-output.txt
         continue-on-error: true
 
@@ -102,10 +104,20 @@ jobs:
         env:
           AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
         run: |
+          CHECKOV_ARG=""
+          if [ -f checkov-results/results_json.json ]; then
+            CHECKOV_ARG="--checkov-output checkov-results/results_json.json"
+          fi
+          PLAN_ARG=""
+          if [ -f terraform/environments/ci/tfplan.json ]; then
+            PLAN_ARG="--plan-file terraform/environments/ci/tfplan.json"
+          fi
           python .github/scripts/azure_openai_tf_check.py \
             --changed-files ${{ steps.changed.outputs.files }} \
             --tfsec-output tfsec-output.json \
-            --output ai-check-output.txt
+            --output ai-check-output.txt \
+            $CHECKOV_ARG \
+            $PLAN_ARG
 
       - name: No gold-tier changes detected
         if: steps.changed.outputs.files == ''
