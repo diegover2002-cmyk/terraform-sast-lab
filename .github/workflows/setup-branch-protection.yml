@@ -14,9 +14,6 @@ on:
         required: true
         default: ""
 
-permissions:
-  administration: write
-
 jobs:
   protect-branches:
     name: Configure branch protection
