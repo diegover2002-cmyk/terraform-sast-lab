@@ -37,7 +37,7 @@ resource "azurerm_key_vault" "main" {
 
   soft_delete_retention_days = 7
   purge_protection_enabled   = true
-  enable_rbac_authorization  = true
+  enable_rbac_authorization  = false  # DEMO: insecure — triggers KV-007 FAIL
 
   network_acls {
     default_action = "Allow"
