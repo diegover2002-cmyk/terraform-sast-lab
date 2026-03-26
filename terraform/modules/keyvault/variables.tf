@@ -7,6 +7,21 @@ variable "suffix"              { type = string }
 variable "tags"                { type = map(string) }
 variable "log_analytics_workspace_id" { type = string }
 
+# Optional overrides — allow callers to supply tenant/deployer IDs directly
+# (e.g. CI plan generation) so that data.azurerm_client_config is not invoked
+# and no real Azure API call is made during terraform plan.
+variable "tenant_id" {
+  description = "Azure tenant ID. If null, resolved via data.azurerm_client_config.current (requires ARM credentials)."
+  type        = string
+  default     = null
+}
+
+variable "deployer_object_id" {
+  description = "Object ID of the deploying identity (user/SP/MI). If null, resolved via data.azurerm_client_config.current."
+  type        = string
+  default     = null
+}
+
 variable "telegram_token" {
   type      = string
   sensitive = true
