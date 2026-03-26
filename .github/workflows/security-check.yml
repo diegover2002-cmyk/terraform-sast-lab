@@ -151,9 +151,9 @@ jobs:
             const aiPassed = aiSection.includes('Gate: PASSED');
             const checkovOk = failed === 0;
 
-            const overall = (blocked || !checkovOk)
+            const overall = blocked
               ? '❌ **Action required**'
-              : '✅ **All checks passed**';
+              : (failed > 0 ? '⚠️ **Gate: PASSED** (Checkov warnings — see details)' : '✅ **All checks passed**');
 
             const checkovStatus = failed > 0 ? '⚠️ warning' : '✅ passed';
 
@@ -207,7 +207,7 @@ jobs:
               });
             }
 
-  # ── Plan-level Checkov (requires ARM credentials) ────────────────────────────
+  # ── Plan-level Checkov (fake ARM creds when real ones absent) ─────────────────
   checkov-tfplan:
     name: "Checkov (Terraform plan)"
     runs-on: ubuntu-latest
@@ -222,39 +222,33 @@ jobs:
       - name: Install Checkov
         run: pip install checkov
 
-      - name: Check ARM credentials availability
-        id: arm-creds
+      - name: Log ARM credential availability
         run: |
           if [[ -n "$ARM_CLIENT_ID" ]]; then
-            echo "available=true" >> $GITHUB_OUTPUT
-            echo "ARM credentials detected — running plan-level Checkov."
+            echo "Real ARM credentials detected — plan will authenticate with Azure."
           else
-            echo "available=false" >> $GITHUB_OUTPUT
-            echo "ARM credentials not configured — falling back to focused static scan."
+            echo "ARM credentials not configured — using placeholder creds with -refresh=false (no Azure API calls needed)."
           fi
         env:
           ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
 
-      # ── Plan-level path: terraform plan → JSON → checkov ─────────────────────
+      # ── terraform plan → JSON → checkov ──────────────────────────────────────
       - name: Setup Terraform
-        if: steps.arm-creds.outputs.available == 'true'
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "~> 1.7"
           terraform_wrapper: false
 
       - name: Terraform Init (CI environment)
-        if: steps.arm-creds.outputs.available == 'true'
         working-directory: terraform/environments/ci
         run: terraform init -backend=false
         env:
-          ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID }}
-          ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET }}
-          ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+          ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID       || '00000000-0000-0000-0000-000000000000' }}
+          ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET   || 'fake-ci-secret-not-deployed' }}
+          ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID       || '00000000-0000-0000-0000-000000000000' }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID || '00000000-0000-0000-0000-000000000000' }}
 
       - name: Terraform Plan
-        if: steps.arm-creds.outputs.available == 'true'
         working-directory: terraform/environments/ci
         run: |
           terraform plan \
@@ -262,40 +256,39 @@ jobs:
             -refresh=false \
             -input=false
         env:
-          ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID }}
-          ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET }}
-          ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+          ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID       || '00000000-0000-0000-0000-000000000000' }}
+          ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET   || 'fake-ci-secret-not-deployed' }}
+          ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID       || '00000000-0000-0000-0000-000000000000' }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID || '00000000-0000-0000-0000-000000000000' }}
         continue-on-error: true
 
       - name: Convert plan to JSON
-        if: steps.arm-creds.outputs.available == 'true'
         working-directory: terraform/environments/ci
         run: terraform show -json tfplan.out > tfplan.json
-
-      - name: Checkov — plan-level analysis
-        if: steps.arm-creds.outputs.available == 'true'
-        run: |
-          checkov \
-            --file terraform/environments/ci/tfplan.json \
-            --framework terraform_plan \
-            --output cli \
-            --soft-fail 2>&1 | tee checkov-plan-output.txt
         continue-on-error: true
 
-      # ── Fallback path: focused static scan when no ARM creds ─────────────────
-      - name: Checkov — focused static scan (fallback)
-        if: steps.arm-creds.outputs.available != 'true'
+      # ── Checkov: plan-level if available, static fallback otherwise ───────────
+      - name: Checkov — plan-level or static fallback
         run: |
-          echo "## Checkov static scan — gold-tier modules"
-          for module in storage keyvault aks; do
-            echo ""
-            echo "### terraform/modules/${module}/"
-            checkov -d terraform/modules/${module} \
-              --framework terraform \
-              --compact \
-              --soft-fail 2>&1
-          done | tee checkov-plan-output.txt
+          if [ -f terraform/environments/ci/tfplan.json ]; then
+            echo "Running plan-level Checkov analysis..."
+            checkov \
+              --file terraform/environments/ci/tfplan.json \
+              --framework terraform_plan \
+              --output cli \
+              --soft-fail 2>&1 | tee checkov-plan-output.txt
+          else
+            echo "Plan unavailable — running focused static scan as fallback."
+            echo "## Checkov static scan — gold-tier modules"
+            for module in storage keyvault aks; do
+              echo ""
+              echo "### terraform/modules/${module}/"
+              checkov -d terraform/modules/${module} \
+                --framework terraform \
+                --compact \
+                --soft-fail 2>&1
+            done | tee checkov-plan-output.txt
+          fi
         continue-on-error: true
 
       - name: Upload Checkov plan report

@@ -1,7 +1,7 @@
 # terraform/environments/ci/main.tf
 # Minimal root module used exclusively for plan-level Checkov CI scanning.
 # NOT for deployment — uses local backend and placeholder variable values.
-# ARM credentials required to run: terraform plan.
+# Runs with -refresh=false and fake ARM creds when real ones are absent.
 
 locals {
   env    = "ci"
@@ -48,6 +48,10 @@ module "keyvault" {
   riot_api_key               = "ci-placeholder"
   telegram_chat_id           = "ci-placeholder"
   cosmosdb_connection_string = "ci-placeholder"
+
+  # Skip data.azurerm_client_config lookup — no real Azure API call needed for plan
+  tenant_id          = "00000000-0000-0000-0000-000000000000"
+  deployer_object_id = "00000000-0000-0000-0000-000000000000"
 }
 
 # ── AKS (gold-tier) ───────────────────────────────────────────────────────────
