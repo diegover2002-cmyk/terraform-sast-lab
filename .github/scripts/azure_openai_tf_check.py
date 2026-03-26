@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,6 +42,13 @@ MODULE_NAMES = {
     "terraform/modules/storage":  "Azure Storage Account",
     "terraform/modules/keyvault": "Azure Key Vault",
     "terraform/modules/aks":      "Azure Kubernetes Service (AKS)",
+}
+
+# Primary resource type per module — used to extract plan attributes
+RESOURCE_TYPES = {
+    "terraform/modules/storage":  "azurerm_storage_account",
+    "terraform/modules/keyvault": "azurerm_key_vault",
+    "terraform/modules/aks":      "azurerm_kubernetes_cluster",
 }
 
 STATUS_ICON   = {"PASS": "✅", "FAIL": "❌", "WARN": "⚠️", "EXCEPTION": "🔵"}
@@ -128,19 +136,23 @@ def extract_must_controls(controls_file: str) -> list[dict]:
 
         severity = next((f for f in fields if re.match(r"^(High|Medium|Low)$", f, re.I)), "—")
         domain   = next((f for f in fields if re.match(r"^[A-Z]{2}$", f)), "—")
-        mcsb     = next((f for f in fields if re.match(r"^[A-Z]{2}-\d+$", f)), "")
+        mcsb     = next((f for f in fields if re.match(r"^[A-Z]{2}-\d{1,2}$", f)), "")
         name     = re.sub(r"\*", "", fields[3]).strip() if len(fields) > 3 else ""
-        checkov  = next((checkov_re.search(f).group(1) for f in fields if checkov_re.search(f)), "")
+        checkov       = next((checkov_re.search(f).group(1) for f in fields if checkov_re.search(f)), "")
+        iac_checkable = next((f for f in fields if re.match(r"^(Yes|Partial|No)$", f, re.I)), "Yes")
 
         controls.append({"id": ctrl_id, "mcsb": mcsb, "domain": domain,
-                         "name": name, "severity": severity, "checkov": checkov})
+                         "name": name, "severity": severity, "checkov": checkov,
+                         "iac_checkable": iac_checkable})
     return controls
 
 
 def controls_to_compact_table(controls: list[dict]) -> str:
-    lines = ["Control ID | Domain | Severity | Name"]
+    lines = ["Control ID | Domain | Severity | Name | IaC Checkable | Checkov Rule"]
     for c in controls:
-        lines.append(f"{c['id']} | {c['domain']} | {c['severity']} | {c['name']}")
+        checkov = c.get("checkov") or "Custom"
+        iac     = c.get("iac_checkable", "Yes")
+        lines.append(f"{c['id']} | {c['domain']} | {c['severity']} | {c['name']} | {iac} | {checkov}")
     return "\n".join(lines)
 
 
@@ -185,21 +197,154 @@ def render_tfsec_section(findings: list[dict], exempt: set[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ── Prompt context builders ───────────────────────────────────────────────────
+
+def build_tfsec_context(findings: list[dict], exempt: set[str]) -> str:
+    """Format tfsec findings as a prompt pre-analysis block."""
+    if not findings:
+        return ""
+    lines = ["tfsec pre-analysis (static tool — do not contradict these results):"]
+    for f in findings:
+        status = "EXCEPTION" if f["rule_id"] in exempt else f["severity"]
+        lines.append(f"  - {f['rule_id']}: {status} — {f['description']}")
+    return "\n".join(lines)
+
+
+def parse_checkov_output(checkov_file: str) -> dict[str, str]:
+    """
+    Parse Checkov JSON output (--output json) into {rule_id: status}.
+    Handles both single-result and array-of-results formats.
+    """
+    try:
+        with open(checkov_file, encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+    # Checkov may output a list when multiple frameworks are run
+    if isinstance(data, list):
+        data = data[0] if data else {}
+
+    check_results = data.get("results", data)
+    results: dict[str, str] = {}
+    for check in check_results.get("passed_checks", []):
+        cid = check.get("check_id", "")
+        if cid:
+            results[cid] = "PASS"
+    for check in check_results.get("failed_checks", []):
+        cid = check.get("check_id", "")
+        if cid:
+            results[cid] = "FAIL"
+    for check in check_results.get("skipped_checks", []):
+        cid = check.get("check_id", "")
+        if cid:
+            results[cid] = "SKIP"
+    return results
+
+
+def build_checkov_context(
+    checkov_results: dict[str, str],
+    controls_meta:   list[dict],
+    exempt:          set[str],
+) -> str:
+    """Format Checkov findings as a prompt pre-analysis block, annotated with control IDs."""
+    if not checkov_results:
+        return ""
+    rule_to_ctrl = {c["checkov"]: c["id"] for c in controls_meta if c.get("checkov")}
+    lines = ["Checkov pre-analysis (static tool — do not contradict these results):"]
+    for rule_id, status in sorted(checkov_results.items()):
+        ctrl_id  = rule_to_ctrl.get(rule_id, "")
+        exc_note = " (exception)" if rule_id in exempt else ""
+        ctrl_note = f" → {ctrl_id}" if ctrl_id else ""
+        lines.append(f"  - {rule_id}: {status}{exc_note}{ctrl_note}")
+    return "\n".join(lines)
+
+
+def extract_plan_resources(plan_file: str, module_dir: str) -> str:
+    """
+    Extract top-level scalar security attributes from terraform plan JSON
+    for the primary resource type of a module.
+    Ignores metadata fields and nested blocks to keep the prompt compact.
+    """
+    try:
+        with open(plan_file, encoding="utf-8") as f:
+            plan = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return ""
+
+    target_type = RESOURCE_TYPES.get(module_dir)
+    if not target_type:
+        return ""
+
+    _SKIP = {
+        "id", "name", "location", "resource_group_name", "resource_group_id",
+        "tags", "timeouts", "dns_prefix", "fqdn", "hostname", "portal_url",
+        "primary_connection_string", "primary_access_key", "secondary_access_key",
+        "primary_blob_connection_string", "secondary_blob_connection_string",
+    }
+
+    results = []
+    for rc in plan.get("resource_changes", []):
+        if rc.get("type") != target_type:
+            continue
+        after = rc.get("change", {}).get("after")
+        if not after:
+            continue
+        # Only scalar (non-dict, non-list) top-level attributes
+        lines = [f"resource: {rc.get('address', target_type)}"]
+        for k, v in after.items():
+            if k in _SKIP or v is None or isinstance(v, (dict, list)):
+                continue
+            lines.append(f"  {k}: {json.dumps(v)}")
+        if len(lines) > 1:
+            results.append("\n".join(lines))
+
+    if not results:
+        return ""
+    return (
+        "Terraform plan — provider-resolved values (may include provider defaults not in HCL):\n"
+        + "\n\n".join(results)
+    )
+
+
 # ── Azure OpenAI ──────────────────────────────────────────────────────────────
 
-def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[dict]:
+_OPENAI_TIMEOUT    = 45          # seconds per attempt
+_OPENAI_MAX_TRIES  = 3           # total attempts
+_OPENAI_BACKOFF    = [0, 10, 20] # seconds to wait before each attempt
+
+
+def call_openai(
+    tf_code:         str,
+    controls_table:  str,
+    service_name:    str,
+    tfsec_context:   str = "",
+    checkov_context: str = "",
+    plan_context:    str = "",
+) -> list[dict]:
     system_prompt = (
         "You are a Terraform security reviewer for Azure infrastructure. "
         "For each control ID in the list, inspect the Terraform code and decide: "
         "PASS (correctly implemented), FAIL (missing or wrong), "
         "WARN (partially met or conditional), "
         "EXCEPTION (a checkov:skip annotation is present for this control). "
+        "The controls table includes 'IaC Checkable' and 'Checkov Rule' columns: "
+        "  'Yes' with a known Checkov rule = the static tool can fully verify; confirm its result. "
+        "  'Partial' or 'Custom' = the static tool cannot fully verify; apply deeper semantic reasoning. "
+        "  'No' = purely semantic judgment required. "
+        "When tfsec or Checkov pre-analysis is provided, do NOT contradict those results — "
+        "defer to them for controls they cover and focus your analysis on Partial/Custom controls. "
         "Reply ONLY with a JSON array — no markdown, no prose — like: "
         '[{"id":"ST-001","status":"PASS","finding":"allow_nested_items_to_be_public = false"}]'
     )
+
+    context_parts = [p for p in (tfsec_context, checkov_context, plan_context) if p]
+    context_block = ("\n\n" + "\n\n".join(context_parts) + "\n\n") if context_parts else "\n\n"
+
     user_prompt = (
         f"Service: {service_name}\n\n"
-        f"Must-priority MCSB controls to check:\n{controls_table}\n\n"
+        f"Must-priority MCSB controls to check:\n{controls_table}"
+        f"{context_block}"
         f"Terraform code:\n```hcl\n{tf_code}\n```"
     )
     headers = {"Content-Type": "application/json", "api-key": API_KEY}
@@ -211,23 +356,41 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
         ],
         "max_output_tokens": 4096,
     }
-    resp = requests.post(ENDPOINT, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    result = resp.json()
 
-    raw_text = ""
-    for item in result.get("output", []):
-        if isinstance(item, dict):
-            content = item.get("content", "")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "output_text":
-                        raw_text += block.get("text", "")
-            elif isinstance(content, str):
-                raw_text += content
+    last_exc: Exception = RuntimeError("No attempts made")
+    for attempt, wait in enumerate(zip(range(_OPENAI_MAX_TRIES), _OPENAI_BACKOFF)):
+        attempt_n, backoff = wait
+        if backoff:
+            print(f"  ↻ Retry {attempt_n}/{_OPENAI_MAX_TRIES - 1} — waiting {backoff}s...")
+            time.sleep(backoff)
+        try:
+            resp = requests.post(ENDPOINT, headers=headers, json=payload, timeout=_OPENAI_TIMEOUT)
+            resp.raise_for_status()
+            result = resp.json()
 
-    raw_text = re.sub(r"```[a-z]*", "", raw_text).strip()
-    return json.loads(raw_text)
+            raw_text = ""
+            for item in result.get("output", []):
+                if isinstance(item, dict):
+                    content = item.get("content", "")
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "output_text":
+                                raw_text += block.get("text", "")
+                    elif isinstance(content, str):
+                        raw_text += content
+
+            raw_text = re.sub(r"```[a-z]*", "", raw_text).strip()
+            if not raw_text:
+                raise ValueError(
+                    "API returned empty output — model may not have produced a response. "
+                    "Check that the Azure OpenAI deployment is active and the model supports this payload format."
+                )
+            return json.loads(raw_text)
+        except Exception as exc:
+            last_exc = exc
+            print(f"  ⚠ Attempt {attempt_n + 1} failed: {exc}", file=sys.stderr)
+
+    raise last_exc
 
 
 # ── Report rendering ──────────────────────────────────────────────────────────
@@ -300,9 +463,13 @@ def main():
         sys.exit(1)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--changed-files", nargs="+", required=True)
-    parser.add_argument("--output",        required=True)
-    parser.add_argument("--tfsec-output",  default=None)
+    parser.add_argument("--changed-files",   nargs="+", required=True)
+    parser.add_argument("--output",          required=True)
+    parser.add_argument("--tfsec-output",    default=None)
+    parser.add_argument("--checkov-output",  default=None,
+                        help="Path to Checkov JSON output file (--output json)")
+    parser.add_argument("--plan-file",       default=None,
+                        help="Path to terraform plan JSON (terraform show -json tfplan.out)")
     args = parser.parse_args()
 
     exempt         = load_exempt_controls(EXCEPTIONS_REGISTRY)
@@ -351,6 +518,17 @@ def main():
 
             print(f"   {len(controls_meta)} Must-priority controls loaded")
 
+            # Build static-tool pre-analysis context for the OpenAI prompt
+            checkov_results  = parse_checkov_output(args.checkov_output) if args.checkov_output else {}
+            tfsec_context    = build_tfsec_context(tfsec_findings, exempt)
+            checkov_context  = build_checkov_context(checkov_results, controls_meta, exempt)
+            plan_context     = extract_plan_resources(args.plan_file, module_dir) if args.plan_file else ""
+
+            if checkov_results:
+                print(f"   Checkov pre-analysis: {len(checkov_results)} rules loaded")
+            if plan_context:
+                print("   Terraform plan: provider-resolved attributes loaded")
+
             try:
                 with open(tf_file, encoding="utf-8") as f:
                     tf_code = f.read()
@@ -360,7 +538,14 @@ def main():
                 continue
 
             try:
-                ai_findings = call_openai(tf_code, controls_to_compact_table(controls_meta), service_name)
+                ai_findings = call_openai(
+                    tf_code,
+                    controls_to_compact_table(controls_meta),
+                    service_name,
+                    tfsec_context=tfsec_context,
+                    checkov_context=checkov_context,
+                    plan_context=plan_context,
+                )
             except Exception as e:
                 api_errors += 1
                 report_sections.append(
