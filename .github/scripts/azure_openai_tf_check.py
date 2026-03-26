@@ -129,7 +129,7 @@ def extract_must_controls(controls_file: str) -> list[dict]:
 
         severity = next((f for f in fields if re.match(r"^(High|Medium|Low)$", f, re.I)), "—")
         domain   = next((f for f in fields if re.match(r"^[A-Z]{2}$", f)), "—")
-        mcsb     = next((f for f in fields if re.match(r"^[A-Z]{2}-\d+$", f)), "")
+        mcsb     = next((f for f in fields if re.match(r"^[A-Z]{2}-\d{1,2}$", f)), "")
         name     = re.sub(r"\*", "", fields[3]).strip() if len(fields) > 3 else ""
         checkov  = next((checkov_re.search(f).group(1) for f in fields if checkov_re.search(f)), "")
 
