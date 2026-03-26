@@ -77,6 +77,13 @@ resource "azurerm_private_endpoint" "kv_pe" {
 }
 ```
 
+**AI Analysis Guidance** (`IaC Checkable: Partial` — Checkov cannot verify cross-resource linkage):
+
+- **PASS**: `azurerm_private_endpoint` resource exists whose `private_service_connection.private_connection_resource_id` references the Key Vault's ID, AND `public_network_access_enabled = false` (or KV-001 is met).
+- **EXCEPTION**: `network_acls.default_action = "Allow"` is present AND a `#checkov:skip=CKV_AZURE_109` annotation with an EXC-xxx reference is present AND `enable_rbac_authorization = true` provides a compensating control — mark EXCEPTION, do not FAIL.
+- **WARN**: `public_network_access_enabled = false` but no `azurerm_private_endpoint` found in the same Terraform file — vault may be unreachable; flag as WARN with note that private endpoint may be managed separately.
+- **FAIL**: `public_network_access_enabled = true` (or omitted, which defaults to enabled) with no `azurerm_private_endpoint` and no exception annotation.
+
 ---
 
 ## KV-003 — Network Default Action Deny
@@ -124,6 +131,12 @@ resource "azurerm_key_vault" "good" {
 | **Checkov** | Custom — assert `azurerm_monitor_diagnostic_setting` targets Key Vault ID with `AuditEvent` category |
 
 ```hcl
+# Insecure — no diagnostic setting for Key Vault
+resource "azurerm_key_vault" "bad" {
+  # ... vault config ...
+}
+# (no azurerm_monitor_diagnostic_setting referencing this vault)
+
 # Secure
 resource "azurerm_monitor_diagnostic_setting" "kv_diag" {
   name                       = "diag-keyvault"
@@ -139,6 +152,14 @@ resource "azurerm_monitor_diagnostic_setting" "kv_diag" {
   }
 }
 ```
+
+**AI Analysis Guidance** (`IaC Checkable: Partial` — Checkov has no built-in rule for this; full semantic analysis required):
+
+- **PASS**: An `azurerm_monitor_diagnostic_setting` resource exists in the Terraform file whose `target_resource_id` references the `azurerm_key_vault` resource, AND it includes `enabled_log { category = "AuditEvent" }`.
+- **FAIL**: No `azurerm_monitor_diagnostic_setting` targeting the Key Vault is present in the file, OR a diagnostic setting exists but does not include the `AuditEvent` log category.
+- **WARN**: A diagnostic setting exists and targets the vault but uses the deprecated `log {}` block instead of `enabled_log {}`, or `AuditEvent` is present but `enabled = false`.
+- **EXCEPTION**: A `#checkov:skip` annotation referencing `MCSB-LT-3` is present on the Key Vault resource — mark as EXCEPTION with the registered justification.
+- **Note**: Diagnostic settings managed outside this Terraform module (e.g. via a separate monitoring module) cannot be detected from HCL alone — in that case mark WARN with a note that logging may be configured externally.
 
 ---
 
