@@ -214,6 +214,8 @@ def parse_checkov_output(checkov_file: str) -> dict[str, str]:
     """
     Parse Checkov JSON output (--output json) into {rule_id: status}.
     Handles both single-result and array-of-results formats.
+    Merges ALL list items so checks from every scanned module are captured.
+    FAIL always wins over PASS or SKIP for the same rule ID.
     """
     try:
         with open(checkov_file, encoding="utf-8") as f:
@@ -221,24 +223,27 @@ def parse_checkov_output(checkov_file: str) -> dict[str, str]:
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
-    # Checkov may output a list when multiple frameworks are run
-    if isinstance(data, list):
-        data = data[0] if data else {}
+    # Checkov outputs a list when scanning a directory or multiple frameworks
+    items = data if isinstance(data, list) else [data]
 
-    check_results = data.get("results", data)
     results: dict[str, str] = {}
-    for check in check_results.get("passed_checks", []):
-        cid = check.get("check_id", "")
-        if cid:
-            results[cid] = "PASS"
-    for check in check_results.get("failed_checks", []):
-        cid = check.get("check_id", "")
-        if cid:
-            results[cid] = "FAIL"
-    for check in check_results.get("skipped_checks", []):
-        cid = check.get("check_id", "")
-        if cid:
-            results[cid] = "SKIP"
+    for item in items:
+        check_results = item.get("results", item)
+        # Set PASS only when not already FAIL
+        for check in check_results.get("passed_checks", []):
+            cid = check.get("check_id", "")
+            if cid and results.get(cid) != "FAIL":
+                results[cid] = "PASS"
+        # FAIL always wins — any failure in any scanned file marks the rule failed
+        for check in check_results.get("failed_checks", []):
+            cid = check.get("check_id", "")
+            if cid:
+                results[cid] = "FAIL"
+        # SKIP only if rule not already PASS or FAIL
+        for check in check_results.get("skipped_checks", []):
+            cid = check.get("check_id", "")
+            if cid and results.get(cid) not in ("FAIL", "PASS"):
+                results[cid] = "SKIP"
     return results
 
 
@@ -332,8 +337,11 @@ def call_openai(
         "  'Yes' with a known Checkov rule = the static tool can fully verify; confirm its result. "
         "  'Partial' or 'Custom' = the static tool cannot fully verify; apply deeper semantic reasoning. "
         "  'No' = purely semantic judgment required. "
-        "When tfsec or Checkov pre-analysis is provided, do NOT contradict those results — "
-        "defer to them for controls they cover and focus your analysis on Partial/Custom controls. "
+        "When tfsec or Checkov pre-analysis is provided, defer to those results ONLY for rules "
+        "EXPLICITLY LISTED in the pre-analysis block. "
+        "For any control whose Checkov rule is NOT listed, you MUST analyze it directly from the "
+        "HCL code — never infer PASS from the absence of a rule in the pre-analysis. "
+        "Plan-level Checkov results (if provided) take priority over static Checkov for the same rule. "
         "Reply ONLY with a JSON array — no markdown, no prose — like: "
         '[{"id":"ST-001","status":"PASS","finding":"allow_nested_items_to_be_public = false"}]'
     )
@@ -466,9 +474,11 @@ def main():
     parser.add_argument("--changed-files",   nargs="+", required=True)
     parser.add_argument("--output",          required=True)
     parser.add_argument("--tfsec-output",    default=None)
-    parser.add_argument("--checkov-output",  default=None,
-                        help="Path to Checkov JSON output file (--output json)")
-    parser.add_argument("--plan-file",       default=None,
+    parser.add_argument("--checkov-output",      default=None,
+                        help="Path to Checkov static JSON output file (--output json)")
+    parser.add_argument("--checkov-plan-output", default=None,
+                        help="Path to Checkov plan-level JSON (checkov --framework terraform_plan)")
+    parser.add_argument("--plan-file",           default=None,
                         help="Path to terraform plan JSON (terraform show -json tfplan.out)")
     args = parser.parse_args()
 
@@ -520,12 +530,17 @@ def main():
 
             # Build static-tool pre-analysis context for the OpenAI prompt
             checkov_results  = parse_checkov_output(args.checkov_output) if args.checkov_output else {}
+            # Plan-level Checkov is more accurate (variables resolved) — overrides static for same rule
+            if args.checkov_plan_output:
+                plan_checkov = parse_checkov_output(args.checkov_plan_output)
+                checkov_results.update(plan_checkov)  # plan values win
+                print(f"   Checkov plan-level: {len(plan_checkov)} rules loaded (override static)")
             tfsec_context    = build_tfsec_context(tfsec_findings, exempt)
             checkov_context  = build_checkov_context(checkov_results, controls_meta, exempt)
             plan_context     = extract_plan_resources(args.plan_file, module_dir) if args.plan_file else ""
 
             if checkov_results:
-                print(f"   Checkov pre-analysis: {len(checkov_results)} rules loaded")
+                print(f"   Checkov pre-analysis: {len(checkov_results)} rules loaded (merged static+plan)")
             if plan_context:
                 print("   Terraform plan: provider-resolved attributes loaded")
 
