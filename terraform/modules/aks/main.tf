@@ -21,7 +21,7 @@ resource "azurerm_kubernetes_cluster" "main" {
   dns_prefix          = "aks-lolnotifier-${var.environment}"
 
   # AK-004
-  local_account_disabled = true
+  local_account_disabled = false  # DEMO: insecure — triggers AK-004 FAIL
 
   # AK-005 + AK-003
   role_based_access_control_enabled = true
