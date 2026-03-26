@@ -35,7 +35,7 @@ resource "azurerm_key_vault" "main" {
   tenant_id           = local.resolved_tenant_id
   sku_name            = "standard"
 
-  soft_delete_retention_days = 7
+  soft_delete_retention_days = 90  # KV-002: extended retention for audit compliance
   purge_protection_enabled   = true
   enable_rbac_authorization  = true
 
