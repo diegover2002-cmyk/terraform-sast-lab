@@ -16,7 +16,15 @@
 #   - Network ACL: deny all by default, allow Azure services (for managed identity access)
 # =============================================================================
 
-data "azurerm_client_config" "current" {}
+data "azurerm_client_config" "current" {
+  # Skipped when both tenant_id and deployer_object_id are provided (e.g. CI plan).
+  count = (var.tenant_id == null || var.deployer_object_id == null) ? 1 : 0
+}
+
+locals {
+  resolved_tenant_id    = coalesce(var.tenant_id, try(data.azurerm_client_config.current[0].tenant_id, null))
+  resolved_deployer_oid = coalesce(var.deployer_object_id, try(data.azurerm_client_config.current[0].object_id, null))
+}
 
 #checkov:skip=CKV_AZURE_109:EXC-001 Key Vault network firewall set to Allow — GitHub Actions runners use dynamic IPs incompatible with IP allowlist. Mitigated by RBAC-only authorization. See docs/compliance/exceptions-registry.json.
 #checkov:skip=CKV_AZURE_189:EXC-001 Same as CKV_AZURE_109 — public network access required for CI/CD pipeline. Tracked exception with expiry 2026-06-22.
@@ -24,7 +32,7 @@ resource "azurerm_key_vault" "main" {
   name                = "kv-lolnotifier-${var.environment}-${var.suffix}"
   location            = var.location
   resource_group_name = var.resource_group_name
-  tenant_id           = data.azurerm_client_config.current.tenant_id
+  tenant_id           = local.resolved_tenant_id
   sku_name            = "standard"
 
   soft_delete_retention_days = 7
@@ -44,7 +52,7 @@ resource "azurerm_key_vault" "main" {
 resource "azurerm_role_assignment" "deployer_secrets_officer" {
   scope                = azurerm_key_vault.main.id
   role_definition_name = "Key Vault Secrets Officer"
-  principal_id         = data.azurerm_client_config.current.object_id
+  principal_id         = local.resolved_deployer_oid
 }
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
