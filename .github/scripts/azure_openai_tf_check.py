@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -128,7 +129,7 @@ def extract_must_controls(controls_file: str) -> list[dict]:
 
         severity = next((f for f in fields if re.match(r"^(High|Medium|Low)$", f, re.I)), "—")
         domain   = next((f for f in fields if re.match(r"^[A-Z]{2}$", f)), "—")
-        mcsb     = next((f for f in fields if re.match(r"^[A-Z]{2}-\d+$", f)), "")
+        mcsb     = next((f for f in fields if re.match(r"^[A-Z]{2}-\d{1,2}$", f)), "")
         name     = re.sub(r"\*", "", fields[3]).strip() if len(fields) > 3 else ""
         checkov  = next((checkov_re.search(f).group(1) for f in fields if checkov_re.search(f)), "")
 
@@ -187,6 +188,11 @@ def render_tfsec_section(findings: list[dict], exempt: set[str]) -> str:
 
 # ── Azure OpenAI ──────────────────────────────────────────────────────────────
 
+_OPENAI_TIMEOUT    = 45          # seconds per attempt
+_OPENAI_MAX_TRIES  = 3           # total attempts
+_OPENAI_BACKOFF    = [0, 10, 20] # seconds to wait before each attempt
+
+
 def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[dict]:
     system_prompt = (
         "You are a Terraform security reviewer for Azure infrastructure. "
@@ -211,23 +217,41 @@ def call_openai(tf_code: str, controls_table: str, service_name: str) -> list[di
         ],
         "max_output_tokens": 4096,
     }
-    resp = requests.post(ENDPOINT, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    result = resp.json()
 
-    raw_text = ""
-    for item in result.get("output", []):
-        if isinstance(item, dict):
-            content = item.get("content", "")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "output_text":
-                        raw_text += block.get("text", "")
-            elif isinstance(content, str):
-                raw_text += content
+    last_exc: Exception = RuntimeError("No attempts made")
+    for attempt, wait in enumerate(zip(range(_OPENAI_MAX_TRIES), _OPENAI_BACKOFF)):
+        attempt_n, backoff = wait
+        if backoff:
+            print(f"  ↻ Retry {attempt_n}/{_OPENAI_MAX_TRIES - 1} — waiting {backoff}s...")
+            time.sleep(backoff)
+        try:
+            resp = requests.post(ENDPOINT, headers=headers, json=payload, timeout=_OPENAI_TIMEOUT)
+            resp.raise_for_status()
+            result = resp.json()
 
-    raw_text = re.sub(r"```[a-z]*", "", raw_text).strip()
-    return json.loads(raw_text)
+            raw_text = ""
+            for item in result.get("output", []):
+                if isinstance(item, dict):
+                    content = item.get("content", "")
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "output_text":
+                                raw_text += block.get("text", "")
+                    elif isinstance(content, str):
+                        raw_text += content
+
+            raw_text = re.sub(r"```[a-z]*", "", raw_text).strip()
+            if not raw_text:
+                raise ValueError(
+                    "API returned empty output — model may not have produced a response. "
+                    "Check that the Azure OpenAI deployment is active and the model supports this payload format."
+                )
+            return json.loads(raw_text)
+        except Exception as exc:
+            last_exc = exc
+            print(f"  ⚠ Attempt {attempt_n + 1} failed: {exc}", file=sys.stderr)
+
+    raise last_exc
 
 
 # ── Report rendering ──────────────────────────────────────────────────────────
