@@ -97,6 +97,45 @@ jobs:
         if: steps.changed.outputs.files != ''
         run: pip install requests
 
+      # ── Terraform plan + plan-level Checkov (for AI context) ─────────────────
+      - name: Setup Terraform
+        if: steps.changed.outputs.files != ''
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.7"
+          terraform_wrapper: false
+
+      - name: Terraform Init & Plan (CI environment)
+        if: steps.changed.outputs.files != ''
+        id: tf-plan
+        working-directory: terraform/environments/ci
+        run: |
+          terraform init -backend=false
+          if terraform plan -out=tfplan.out -refresh=false -input=false 2>&1; then
+            terraform show -json tfplan.out > tfplan.json
+            echo "plan_ok=true" >> $GITHUB_OUTPUT
+          else
+            echo "plan_ok=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID       || '00000000-0000-0000-0000-000000000000' }}
+          ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET   || 'fake-ci-secret-not-deployed' }}
+          ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID       || '00000000-0000-0000-0000-000000000000' }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID || '00000000-0000-0000-0000-000000000000' }}
+        continue-on-error: true
+
+      - name: Checkov — plan-level analysis
+        if: steps.changed.outputs.files != '' && steps.tf-plan.outputs.plan_ok == 'true'
+        run: |
+          mkdir -p checkov-plan-results
+          checkov \
+            --file terraform/environments/ci/tfplan.json \
+            --framework terraform_plan \
+            --output json \
+            --output-file-path checkov-plan-results/ \
+            --soft-fail
+        continue-on-error: true
+
       - name: Run AI Security Check
         id: ai-check
         if: steps.changed.outputs.files != ''
@@ -108,6 +147,10 @@ jobs:
           if [ -f checkov-results/results_json.json ]; then
             CHECKOV_ARG="--checkov-output checkov-results/results_json.json"
           fi
+          CHECKOV_PLAN_ARG=""
+          if [ -f checkov-plan-results/results_json.json ]; then
+            CHECKOV_PLAN_ARG="--checkov-plan-output checkov-plan-results/results_json.json"
+          fi
           PLAN_ARG=""
           if [ -f terraform/environments/ci/tfplan.json ]; then
             PLAN_ARG="--plan-file terraform/environments/ci/tfplan.json"
@@ -117,6 +160,7 @@ jobs:
             --tfsec-output tfsec-output.json \
             --output ai-check-output.txt \
             $CHECKOV_ARG \
+            $CHECKOV_PLAN_ARG \
             $PLAN_ARG
 
       - name: No gold-tier changes detected
@@ -223,7 +267,6 @@ jobs:
   checkov-tfplan:
     name: "Checkov (Terraform plan)"
     runs-on: ubuntu-latest
-    needs: security
     if: always()
     continue-on-error: true
 
