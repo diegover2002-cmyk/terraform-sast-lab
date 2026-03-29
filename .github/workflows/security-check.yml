@@ -188,6 +188,7 @@ jobs:
           CHECKOV_PASSED:  ${{ steps.checkov-summary.outputs.passed }}
           CHECKOV_FAILED:  ${{ steps.checkov-summary.outputs.failed }}
           CHECKOV_SKIPPED: ${{ steps.checkov-summary.outputs.skipped }}
+          TF_PLAN_OK:      ${{ steps.tf-plan.outputs.plan_ok }}
         with:
           script: |
             const fs = require('fs');
@@ -206,12 +207,16 @@ jobs:
             const blocked  = aiSection.includes('Gate: BLOCKED');
             const aiPassed = aiSection.includes('Gate: PASSED');
             const checkovOk = failed === 0;
+            const planOk   = process.env.TF_PLAN_OK === 'true';
 
             const overall = blocked
               ? '❌ **Action required**'
               : (failed > 0 ? '⚠️ **Gate: PASSED** (Checkov warnings — see details)' : '✅ **All checks passed**');
 
             const checkovStatus = failed > 0 ? '⚠️ warning' : '✅ passed';
+            const planWarning = !planOk
+              ? `\n> ⚠️ **Terraform plan unavailable** — AI analysis based on static scan only (no plan context or plan-level Checkov)\n`
+              : '';
 
             const now = new Date().toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
             const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
@@ -221,7 +226,7 @@ jobs:
               `## 🔒 Terraform Security Report — ${overall}`,
               ``,
               `> PR **#${{ github.event.pull_request.number }}** · Branch \`${{ github.head_ref }}\` · Run ${run} · ${now}`,
-              ``,
+              planWarning,
               `---`,
               ``,
               `### 📋 Checkov IaC Scan — ${checkovStatus}`,
