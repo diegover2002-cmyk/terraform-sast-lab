@@ -51,6 +51,22 @@ RESOURCE_TYPES = {
     "terraform/modules/aks":      "azurerm_kubernetes_cluster",
 }
 
+# Secondary resource types whose plan attributes are relevant for Partial controls
+# (e.g. diagnostic settings, private endpoints) — extracted alongside the primary resource
+SECONDARY_RESOURCE_TYPES: dict[str, list[str]] = {
+    "terraform/modules/storage":  [
+        "azurerm_monitor_diagnostic_setting",  # ST-008
+    ],
+    "terraform/modules/keyvault": [
+        "azurerm_private_endpoint",            # KV-002
+        "azurerm_monitor_diagnostic_setting",  # KV-004
+        "azurerm_role_assignment",             # KV-007 (RBAC grant)
+    ],
+    "terraform/modules/aks": [
+        "azurerm_monitor_diagnostic_setting",  # AK-009
+    ],
+}
+
 STATUS_ICON   = {"PASS": "✅", "FAIL": "❌", "WARN": "⚠️", "EXCEPTION": "🔵"}
 TFSEC_SEV_ICON = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}
 
@@ -265,11 +281,25 @@ def build_checkov_context(
     return "\n".join(lines)
 
 
+def _extract_scalars(rc: dict, skip: set[str]) -> list[str]:
+    """Return list of 'key: value' lines for scalar top-level attributes of a resource_change."""
+    after = rc.get("change", {}).get("after")
+    if not after:
+        return []
+    lines = [f"resource: {rc.get('address', rc.get('type', '?'))}"]
+    for k, v in after.items():
+        if k in skip or v is None or isinstance(v, (dict, list)):
+            continue
+        lines.append(f"  {k}: {json.dumps(v)}")
+    return lines if len(lines) > 1 else []
+
+
 def extract_plan_resources(plan_file: str, module_dir: str) -> str:
     """
-    Extract top-level scalar security attributes from terraform plan JSON
-    for the primary resource type of a module.
-    Ignores metadata fields and nested blocks to keep the prompt compact.
+    Extract top-level scalar security attributes from terraform plan JSON.
+    Covers the primary resource type AND secondary types (diagnostic settings,
+    private endpoints, role assignments) that are relevant for Partial controls.
+    Ignores metadata/secret fields to keep the prompt compact.
     """
     try:
         with open(plan_file, encoding="utf-8") as f:
@@ -277,8 +307,8 @@ def extract_plan_resources(plan_file: str, module_dir: str) -> str:
     except (FileNotFoundError, json.JSONDecodeError):
         return ""
 
-    target_type = RESOURCE_TYPES.get(module_dir)
-    if not target_type:
+    primary_type = RESOURCE_TYPES.get(module_dir)
+    if not primary_type:
         return ""
 
     _SKIP = {
@@ -286,22 +316,18 @@ def extract_plan_resources(plan_file: str, module_dir: str) -> str:
         "tags", "timeouts", "dns_prefix", "fqdn", "hostname", "portal_url",
         "primary_connection_string", "primary_access_key", "secondary_access_key",
         "primary_blob_connection_string", "secondary_blob_connection_string",
+        "target_resource_id", "log_analytics_workspace_id",
     }
 
-    results = []
+    secondary_types = set(SECONDARY_RESOURCE_TYPES.get(module_dir, []))
+    all_types = {primary_type} | secondary_types
+
+    results: list[str] = []
     for rc in plan.get("resource_changes", []):
-        if rc.get("type") != target_type:
+        if rc.get("type") not in all_types:
             continue
-        after = rc.get("change", {}).get("after")
-        if not after:
-            continue
-        # Only scalar (non-dict, non-list) top-level attributes
-        lines = [f"resource: {rc.get('address', target_type)}"]
-        for k, v in after.items():
-            if k in _SKIP or v is None or isinstance(v, (dict, list)):
-                continue
-            lines.append(f"  {k}: {json.dumps(v)}")
-        if len(lines) > 1:
+        lines = _extract_scalars(rc, _SKIP)
+        if lines:
             results.append("\n".join(lines))
 
     if not results:
@@ -535,12 +561,15 @@ def main():
                 plan_checkov = parse_checkov_output(args.checkov_plan_output)
                 checkov_results.update(plan_checkov)  # plan values win
                 print(f"   Checkov plan-level: {len(plan_checkov)} rules loaded (override static)")
+            # Filter to only rules referenced by this module's Must controls (reduces LLM noise)
+            relevant_rules   = {c["checkov"] for c in controls_meta if c.get("checkov")}
+            filtered_checkov = {k: v for k, v in checkov_results.items() if k in relevant_rules}
             tfsec_context    = build_tfsec_context(tfsec_findings, exempt)
-            checkov_context  = build_checkov_context(checkov_results, controls_meta, exempt)
+            checkov_context  = build_checkov_context(filtered_checkov, controls_meta, exempt)
             plan_context     = extract_plan_resources(args.plan_file, module_dir) if args.plan_file else ""
 
-            if checkov_results:
-                print(f"   Checkov pre-analysis: {len(checkov_results)} rules loaded (merged static+plan)")
+            if filtered_checkov:
+                print(f"   Checkov pre-analysis: {len(filtered_checkov)}/{len(checkov_results)} rules (module-filtered)")
             if plan_context:
                 print("   Terraform plan: provider-resolved attributes loaded")
 
@@ -572,7 +601,7 @@ def main():
 
             section, module_fails = render_module_report(
                 module_dir, tf_file, ai_findings, controls_meta, exempt, tfsec_section,
-                policy_mapping=policy_mapping if module_dir == "terraform/modules/storage" else None,
+                policy_mapping=policy_mapping or None,
             )
             total_fails += module_fails
             report_sections.append(section)
