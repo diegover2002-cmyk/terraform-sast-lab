@@ -112,12 +112,14 @@ jobs:
         id: plan-check
         if: steps.changed.outputs.files != ''
         run: |
-          if [ -f terraform/environments/ci/tfplan.json ]; then
+          # Check that the file exists AND is non-empty (-s flag)
+          # An empty file can be created by shell output redirect when terraform plan fails
+          if [ -s terraform/environments/ci/tfplan.json ]; then
             echo "plan_ok=true" >> $GITHUB_OUTPUT
             echo "Terraform plan artifact available — plan-level context enabled"
           else
             echo "plan_ok=false" >> $GITHUB_OUTPUT
-            echo "Terraform plan artifact not available — AI analysis will use static scan only"
+            echo "Terraform plan artifact not available or empty — AI analysis will use static scan only"
           fi
 
       - name: Run AI Security Check
@@ -293,6 +295,7 @@ jobs:
           ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID || '00000000-0000-0000-0000-000000000000' }}
 
       - name: Terraform Plan
+        id: terraform-plan
         working-directory: terraform/environments/ci
         run: |
           terraform plan \
@@ -307,6 +310,9 @@ jobs:
         continue-on-error: true
 
       - name: Convert plan to JSON
+        # Only run if the plan step succeeded — output redirect would otherwise create an
+        # empty tfplan.json that confuses downstream jobs into treating plan as "available"
+        if: steps.terraform-plan.outcome == 'success'
         working-directory: terraform/environments/ci
         run: terraform show -json tfplan.out > tfplan.json
         continue-on-error: true

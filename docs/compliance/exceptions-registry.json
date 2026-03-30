@@ -9,7 +9,7 @@
       "status": "active",
       "resource": "kv-lolnotifier-<env>-<suffix>",
       "resource_type": "azurerm_key_vault",
-      "policy_controls": ["CKV_AZURE_109", "CKV_AZURE_189", "MCSB-NS-2"],
+      "policy_controls": ["CKV_AZURE_109", "CKV_AZURE_189", "MCSB-NS-2", "KV-002"],
       "azure_policy_exemption_id": "/subscriptions/4f23201e-3333-4d6a-879b-6a6bea485b9f/resourceGroups/rg-lolnotifier-dev/providers/Microsoft.Authorization/policyExemptions/EXC-001-kv-public-access",
       "azure_policy_exemption_category": "Waiver",
       "title": "Key Vault network ACL set to Allow for CI/CD pipeline access",
