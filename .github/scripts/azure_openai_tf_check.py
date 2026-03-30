@@ -114,14 +114,27 @@ def load_exempt_controls(registry_file: str) -> set[str]:
 
 
 def is_exempt(ctrl_meta: dict, exempt: set[str]) -> str | None:
-    """Returns matched exception ID if this control is covered, else None."""
+    """
+    Returns matched exception ID if this control has an active registered exception.
+
+    Matching order:
+    1. Checkov rule ID (e.g. CKV_AZURE_40) — unique per resource type, most specific
+    2. Service-specific control ID (e.g. ST-011, KV-007) — unique per module
+
+    NOTE: We do NOT match on MCSB domain keys (e.g. MCSB-IM-1) because they are
+    shared across services — an exception for storage MCSB-IM-1 (shared key access)
+    would incorrectly exempt keyvault MCSB-IM-1 (RBAC authorization), which are
+    completely different controls on different resource types.
+    Use service-specific control IDs in exceptions-registry.json instead.
+    """
+    # 1. Check by Checkov rule ID (unique per resource type)
     checkov = ctrl_meta.get("checkov", "")
     if checkov and checkov in exempt:
         return checkov
-    mcsb = ctrl_meta.get("mcsb", "")
-    mcsb_key = f"MCSB-{mcsb}" if mcsb else ""
-    if mcsb_key and mcsb_key in exempt:
-        return mcsb_key
+    # 2. Check by service-specific control ID (e.g. ST-011, KV-007, AK-004)
+    ctrl_id = ctrl_meta.get("id", "")
+    if ctrl_id and ctrl_id in exempt:
+        return ctrl_id
     return None
 
 
@@ -438,7 +451,6 @@ def call_openai(
 
 def render_module_report(
     module_dir:     str,
-    tf_file:        str,
     ai_findings:    list[dict],
     controls_meta:  list[dict],
     exempt:         set[str],
@@ -471,7 +483,7 @@ def render_module_report(
         sep    = "|---|---|---|---|---|"
 
     lines = [
-        f"#### `{tf_file}` — {service_name}", "",
+        f"#### `{module_dir}/` — {service_name}", "",
         tfsec_section,
         "**AI semantic analysis (MCSB Must-priority):**\n",
         header,
@@ -551,12 +563,12 @@ def main():
                 controls_meta = extract_must_controls(controls_file)
             except FileNotFoundError:
                 report_sections.append(
-                    f"#### `{tf_file}`\n\n⚠️ Controls file not found: `{controls_file}` — skipped.\n\n---\n")
+                    f"#### `{module_dir}/`\n\n⚠️ Controls file not found: `{controls_file}` — skipped.\n\n---\n")
                 continue
 
             if not controls_meta:
                 report_sections.append(
-                    f"#### `{tf_file}`\n\nℹ️ No Must-priority controls found — skipped.\n\n---\n")
+                    f"#### `{module_dir}/`\n\nℹ️ No Must-priority controls found — skipped.\n\n---\n")
                 continue
 
             print(f"   {len(controls_meta)} Must-priority controls loaded")
@@ -580,13 +592,29 @@ def main():
             if plan_context:
                 print("   Terraform plan: provider-resolved attributes loaded")
 
-            try:
-                with open(tf_file, encoding="utf-8") as f:
-                    tf_code = f.read()
-            except FileNotFoundError:
+            # Read ALL .tf files in the module directory — not just the changed file.
+            # This ensures the AI sees the complete module context (main.tf, variables.tf,
+            # outputs.tf, etc.) regardless of which file triggered the PR change.
+            module_path = Path(module_dir)
+            tf_file_paths = sorted(module_path.glob("*.tf"))
+            if not tf_file_paths:
                 report_sections.append(
-                    f"#### `{tf_file}`\n\n⚠️ File not found — skipped.\n\n---\n")
+                    f"#### `{module_dir}/`\n\n⚠️ No .tf files found in module directory — skipped.\n\n---\n")
                 continue
+            tf_code_parts: list[str] = []
+            missing_files: list[str] = []
+            for tf_path in tf_file_paths:
+                try:
+                    tf_code_parts.append(f"# ── {tf_path.name} ──\n{tf_path.read_text(encoding='utf-8')}")
+                except FileNotFoundError:
+                    missing_files.append(tf_path.name)
+            if not tf_code_parts:
+                report_sections.append(
+                    f"#### `{module_dir}/`\n\n⚠️ Could not read any .tf files — skipped.\n\n---\n")
+                continue
+            tf_code = "\n\n".join(tf_code_parts)
+            print(f"   Read {len(tf_code_parts)} .tf files from {module_dir}: "
+                  f"{', '.join(p.name for p in tf_file_paths)}")
 
             try:
                 ai_findings = call_openai(
@@ -600,14 +628,14 @@ def main():
             except Exception as e:
                 api_errors += 1
                 report_sections.append(
-                    f"#### `{tf_file}` — {service_name}\n\n"
+                    f"#### `{module_dir}/` — {service_name}\n\n"
                     f"❌ **AI check failed** — cannot confirm security posture for this module.\n"
                     f"Error: `{e}`\n\n---\n")
                 print(f"   API error: {e}", file=sys.stderr)
                 continue
 
             section, module_fails = render_module_report(
-                module_dir, tf_file, ai_findings, controls_meta, exempt, tfsec_section,
+                module_dir, ai_findings, controls_meta, exempt, tfsec_section,
                 policy_mapping=policy_mapping or None,
             )
             total_fails += module_fails
