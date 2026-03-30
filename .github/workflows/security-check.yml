@@ -287,7 +287,7 @@ jobs:
 
       - name: Terraform Init (CI environment)
         working-directory: terraform/environments/ci
-        run: terraform init -backend=false
+        run: terraform init
         env:
           ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID       || '00000000-0000-0000-0000-000000000000' }}
           ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET   || 'fake-ci-secret-not-deployed' }}
@@ -298,16 +298,36 @@ jobs:
         id: terraform-plan
         working-directory: terraform/environments/ci
         run: |
+          set +e
           terraform plan \
             -out=tfplan.out \
             -refresh=false \
-            -input=false
+            -input=false \
+            2>&1 | tee plan.log
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "plan_exit_code=${EXIT_CODE}" >> $GITHUB_OUTPUT
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "::warning::Terraform plan failed (exit ${EXIT_CODE}) — plan-level analysis unavailable"
+            echo "=== Last 30 lines of plan output ==="
+            tail -30 plan.log
+          fi
+          exit $EXIT_CODE
         env:
           ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID       || '00000000-0000-0000-0000-000000000000' }}
           ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET   || 'fake-ci-secret-not-deployed' }}
           ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID       || '00000000-0000-0000-0000-000000000000' }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID || '00000000-0000-0000-0000-000000000000' }}
+          TF_LOG: ERROR
         continue-on-error: true
+
+      - name: Upload plan debug log (on plan failure)
+        if: steps.terraform-plan.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-debug-${{ github.run_id }}
+          path: terraform/environments/ci/plan.log
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Convert plan to JSON
         # Only run if the plan step succeeded — output redirect would otherwise create an
