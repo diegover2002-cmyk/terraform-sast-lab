@@ -37,7 +37,16 @@ resource "azurerm_key_vault" "main" {
 
   soft_delete_retention_days = 7
   purge_protection_enabled   = true
-  enable_rbac_authorization  = true
+  enable_rbac_authorization  = var.enable_rbac_authorization
+
+  dynamic "access_policy" {
+    for_each = var.enable_rbac_authorization ? [] : var.access_policies
+    content {
+      tenant_id          = local.resolved_tenant_id
+      object_id          = access_policy.value.object_id
+      secret_permissions = access_policy.value.secret_permissions
+    }
+  }
 
   network_acls {
     default_action = "Allow"
@@ -48,8 +57,10 @@ resource "azurerm_key_vault" "main" {
 }
 
 # ── RBAC: grant the deploying identity (developer / CI service principal) ─────
+# Only created when enable_rbac_authorization = true (RBAC mode).
 
 resource "azurerm_role_assignment" "deployer_secrets_officer" {
+  count                = var.enable_rbac_authorization ? 1 : 0
   scope                = azurerm_key_vault.main.id
   role_definition_name = "Key Vault Secrets Officer"
   principal_id         = local.resolved_deployer_oid
