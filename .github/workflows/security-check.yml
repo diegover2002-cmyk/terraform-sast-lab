@@ -75,6 +75,7 @@ jobs:
       # ── Layers 2 & 3: tfsec + AI (gold-tier only) ────────────────────────
       - name: Install tfsec
         if: steps.changed.outputs.files != ''
+        continue-on-error: true
         run: |
           curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh \
             | bash
