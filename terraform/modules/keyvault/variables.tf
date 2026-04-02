@@ -43,3 +43,18 @@ variable "cosmosdb_connection_string" {
   sensitive   = true
   default     = ""  # Empty until cosmosdb module is applied first
 }
+
+variable "enable_rbac_authorization" {
+  description = "Use Azure RBAC data-plane authorization (true, default) or legacy vault access policies (false). RBAC is the recommended model — disabling it will fail KV-007."
+  type        = bool
+  default     = true
+}
+
+variable "access_policies" {
+  description = "Access policy objects applied when enable_rbac_authorization = false. Each entry grants secret permissions to one principal."
+  type = list(object({
+    object_id          = string
+    secret_permissions = list(string)
+  }))
+  default = []
+}
