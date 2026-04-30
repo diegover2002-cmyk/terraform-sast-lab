@@ -1,6 +1,7 @@
 # terraform/modules/storage/main.tf
 # Azure Storage Account — gold-tier module (MCSB-monitored).
 # Managed by: terraform-sast-lab SAST pipeline.
+# Pipeline: Checkov + tfsec + Azure OpenAI semantic analysis (plan-context enabled).
 
 #checkov:skip=CKV_AZURE_59:EXC-002 Storage network rules omitted — Function App Consumption plan (Y1) uses shared Azure infrastructure without VNet injection support. Access key stored in Key Vault. See docs/compliance/exceptions-registry.json.
 #checkov:skip=CKV_AZURE_35:EXC-002 Same as CKV_AZURE_59 — network ACL Deny would block Function App runtime on Y1 plan.
