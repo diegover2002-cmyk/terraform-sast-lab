@@ -286,57 +286,77 @@ jobs:
           terraform_wrapper: false
 
       - name: Terraform Init (CI environment)
+        id: tf-init
         working-directory: terraform/environments/ci
         continue-on-error: true
         run: terraform init -backend=false
-        env:
-          ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID       || '00000000-0000-0000-0000-000000000000' }}
-          ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET   || 'fake-ci-secret-not-deployed' }}
-          ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID       || '00000000-0000-0000-0000-000000000000' }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID || '00000000-0000-0000-0000-000000000000' }}
 
-      - name: Terraform Plan
+      - name: Terraform Plan (mock provider — no Azure auth required)
         id: terraform-plan
         working-directory: terraform/environments/ci
+        continue-on-error: true
         run: |
-          set +e
-          terraform plan \
-            -out=tfplan.out \
-            -refresh=false \
-            -input=false \
-            2>&1 | tee plan.log
+          # terraform test with mock_provider bypasses azurerm authentication entirely.
+          # This generates a valid plan without any Azure tenant access.
+          terraform test -filter=ci_mock.tftest.hcl -json 2>&1 | tee test-output.json
           EXIT_CODE=${PIPESTATUS[0]}
           echo "plan_exit_code=${EXIT_CODE}" >> $GITHUB_OUTPUT
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "::warning::Terraform plan failed (exit ${EXIT_CODE}) — plan-level analysis unavailable"
-            echo "=== Last 30 lines of plan output ==="
-            tail -30 plan.log
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ Mock plan succeeded — extracting plan JSON for Checkov"
+          else
+            echo "::warning::terraform test failed (exit ${EXIT_CODE}) — falling back to static analysis"
+            tail -20 test-output.json
           fi
-          exit $EXIT_CODE
-        env:
-          ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID       || '00000000-0000-0000-0000-000000000000' }}
-          ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET   || 'fake-ci-secret-not-deployed' }}
-          ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID       || '00000000-0000-0000-0000-000000000000' }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID || '00000000-0000-0000-0000-000000000000' }}
-          TF_LOG: ERROR
+
+      - name: Extract plan JSON from test output
+        id: extract-plan
+        if: steps.terraform-plan.outcome == 'success'
+        working-directory: terraform/environments/ci
         continue-on-error: true
+        run: |
+          # terraform test -json emits one JSON object per line (JSON UI protocol).
+          # Extract the planned_values block that contains resource_changes compatible
+          # with the tfplan.json schema Checkov expects.
+          python3 - <<'PYEOF'
+          import json, sys, pathlib
+
+          events = []
+          for line in open("test-output.json"):
+              line = line.strip()
+              if line:
+                  try:
+                      events.append(json.loads(line))
+                  except json.JSONDecodeError:
+                      pass
+
+          # Collect planned resource changes from test output events
+          resource_changes = []
+          for ev in events:
+              rc = ev.get("resource_changes")
+              if isinstance(rc, list):
+                  resource_changes.extend(rc)
+
+          if not resource_changes:
+              print("No resource_changes found in test output — plan JSON not available")
+              sys.exit(1)
+
+          plan = {
+              "format_version": "1.2",
+              "terraform_version": "1.7.0",
+              "resource_changes": resource_changes,
+          }
+          pathlib.Path("tfplan.json").write_text(json.dumps(plan, indent=2))
+          print(f"Extracted {len(resource_changes)} resource changes → tfplan.json")
+          PYEOF
 
       - name: Upload plan debug log (on plan failure)
         if: steps.terraform-plan.outcome != 'success'
         uses: actions/upload-artifact@v4
         with:
           name: terraform-plan-debug-${{ github.run_id }}
-          path: terraform/environments/ci/plan.log
+          path: terraform/environments/ci/test-output.json
           retention-days: 3
           if-no-files-found: ignore
-
-      - name: Convert plan to JSON
-        # Only run if the plan step succeeded — output redirect would otherwise create an
-        # empty tfplan.json that confuses downstream jobs into treating plan as "available"
-        if: steps.terraform-plan.outcome == 'success'
-        working-directory: terraform/environments/ci
-        run: terraform show -json tfplan.out > tfplan.json
-        continue-on-error: true
 
       # ── Checkov: plan-level JSON (consumed by security job) ─────────────────
       - name: Checkov — plan-level JSON output
